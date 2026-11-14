@@ -1,5 +1,8 @@
 plugins { id 'com.android.application' }
 
+def appCode = (project.findProperty('appVersionCode') ?: '3').toString().toInteger()
+def appName = (project.findProperty('appVersionName') ?: '3.0').toString()
+
 android {
     namespace 'com.fastcar.home'
     compileSdk 33
@@ -9,8 +12,8 @@ android {
         minSdk 24
         targetSdk 33
         // GitHub Actions ҳар йиғишда рақамни оширади (run_number)
-        versionCode (project.findProperty('appVersionCode') ?: '3').toInteger()
-        versionName (project.findProperty('appVersionName') ?: '3.0')
+        versionCode = appCode
+        versionName = appName
     }
     signingConfigs {
         release {
