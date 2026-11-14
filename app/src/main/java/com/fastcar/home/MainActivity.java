@@ -39,6 +39,7 @@ import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
@@ -349,7 +350,7 @@ public class MainActivity extends Activity {
         date.setFormat24Hour("d MMMM, EEEE");
         date.setFormat12Hour("d MMMM, EEEE");
         date.setTextColor(MUTED);
-        date.setTextSize(14);
+        date.setTextSize(16);
         date.setSingleLine(true);
         date.setEllipsize(TextUtils.TruncateAt.END);
         top.addView(date, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -370,7 +371,7 @@ public class MainActivity extends Activity {
         clock.setFormat24Hour("HH:mm");
         clock.setFormat12Hour("HH:mm");
         clock.setTextColor(Color.WHITE);
-        clock.setTextSize(60);
+        clock.setTextSize(80);
         clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         clock.setIncludeFontPadding(false);
         clockCard.addView(clock, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
@@ -380,6 +381,23 @@ public class MainActivity extends Activity {
 
         LinearLayout speedCard = card(LinearLayout.VERTICAL);
         speedCard.setPadding(dp(10), dp(10), dp(10), dp(10));
+        speedCard.setClickable(true);
+        speedCard.setOnTouchListener((v, e) -> {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    v.setPressed(true);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    v.setPressed(false);
+                    openMaps();   // и касание, и свайп
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    v.setPressed(false);
+                    return true;
+                default:
+                    return true;
+            }
+        });
         gauge = new GaugeView(this);
         speedCard.addView(gauge, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         left.addView(speedCard, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -535,7 +553,7 @@ public class MainActivity extends Activity {
         radio.setPadding(dp(16), dp(10), dp(16), dp(10));
         radio.setClickable(true);
         radio.setOnClickListener(v -> openRadio());
-        widgets.addView(radio, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.62f));
+        widgets.addView(radio, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         TextView fm = label("FM", 13, 0xFF67E8F9);
         fm.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
@@ -953,6 +971,19 @@ public class MainActivity extends Activity {
         }
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(i);
+    }
+
+    private void openMaps() {
+        String[] pk = {"ru.yandex.yandexmaps", "ru.yandex.yandexnavi"};
+        for (String p : pk) {
+            Intent i = pm.getLaunchIntentForPackage(p);
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                return;
+            }
+        }
+        Toast.makeText(this, "Яндекс Карты не установлены", Toast.LENGTH_SHORT).show();
     }
 
     private void openRadio() {
