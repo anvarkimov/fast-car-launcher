@@ -12,11 +12,16 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
@@ -24,13 +29,21 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
+import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextClock;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -42,9 +55,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Жуда енгил лаунчер: фон расми йўқ, анимация йўқ, виджет йўқ.
- * Юқорида соат, ўртада бош қатор (сevimli иловалар), пастда барча иловалар.
- * Иловага узоқ босилса: бош қаторга қўшиш/олиб ташлаш, маълумот, ўчириш.
+ * Енгил лаунчер, Mi Box'даги "Уй экрани" услубида: шиша (glass) кўринишдаги
+ * юмалоқ карточкалар, катта соат, об-ҳаво, бош қатор ва иловалар.
+ * Ҳақиқий blur ишлатилмайди (магнитолада қотирмаслик учун) — фақат
+ * шаффоф юмалоқ карточкалар ва юпқа чизиқ.
  */
 public class MainActivity extends Activity {
 
@@ -57,6 +71,8 @@ public class MainActivity extends Activity {
 
     private static final String PREFS = "fast_launcher";
     private static final String KEY_FAVS = "favs";
+    private static final String KEY_GLASS = "glass";
+    private static final long WEATHER_EVERY_MS = 30L * 60L * 1000L;
 
     private static final String[] DEFAULT_FAVS = {
             "com.google.android.apps.maps", "ru.yandex.yandexnavi", "ru.yandex.yandexmaps",
@@ -68,19 +84,22 @@ public class MainActivity extends Activity {
     private final Map<String, Bitmap> iconCache = new HashMap<>();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService net = Executors.newSingleThreadExecutor();
 
     private SharedPreferences prefs;
     private PackageManager pm;
     private LinearLayout favRow;
     private GridView grid;
     private AppAdapter adapter;
-    private boolean dirty = true;
+    private TextView weather;
     private float density;
+    private int glassVer = 0;
+    private Drawable.ConstantState glassCS;
+    private long lastWeather = 0;
 
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context c, Intent i) {
-            dirty = true;
             loadApps();
         }
     };
@@ -91,6 +110,7 @@ public class MainActivity extends Activity {
         pm = getPackageManager();
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         density = getResources().getDisplayMetrics().density;
+        rebuildGlass();
         buildUi();
 
         IntentFilter f = new IntentFilter();
@@ -104,16 +124,24 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        if (SystemClock.elapsedRealtime() - lastWeather > WEATHER_EVERY_MS || lastWeather == 0) {
+            loadWeather();
+        }
+    }
+
+    @Override
     protected void onDestroy() {
         try { unregisterReceiver(pkgReceiver); } catch (Exception ignored) { }
         io.shutdownNow();
+        net.shutdownNow();
         super.onDestroy();
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        // "Уй" тугмаси босилганда рўйхат бошига қайтади
         if (grid != null) grid.setSelection(0);
     }
 
@@ -122,63 +150,130 @@ public class MainActivity extends Activity {
         // бош экранда "орқага" ҳеч нима қилмайди
     }
 
-    // ---------------------------------------------------------------- UI
+    // ---------------------------------------------------------------- шиша услуби
 
     private int dp(int v) {
         return Math.round(v * density);
     }
 
+    private int glass() {
+        return prefs.getInt(KEY_GLASS, 50);
+    }
+
+    private GradientDrawable roundRect(int fill, int stroke) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(fill);
+        g.setCornerRadius(dp(18));
+        g.setStroke(dp(1), stroke);
+        return g;
+    }
+
+    private void rebuildGlass() {
+        float s = glass() / 100f;
+        int fill = Color.argb((int) (255 * (0.05 + 0.20 * s)), 255, 255, 255);
+        int fillP = Color.argb((int) (255 * (0.14 + 0.25 * s)), 255, 255, 255);
+        int stroke = Color.argb((int) (255 * (0.08 + 0.22 * s)), 255, 255, 255);
+        StateListDrawable sl = new StateListDrawable();
+        sl.addState(new int[]{android.R.attr.state_pressed}, roundRect(fillP, stroke));
+        sl.addState(new int[]{android.R.attr.state_focused}, roundRect(fillP, stroke));
+        sl.addState(new int[]{}, roundRect(fill, stroke));
+        glassCS = sl.getConstantState();
+        glassVer++;
+    }
+
+    private void applyGlass() {
+        rebuildGlass();
+        adapter.notifyDataSetChanged();
+        rebuildFavs();
+    }
+
+    // ---------------------------------------------------------------- UI
+
+    private TextView label(String text, int sp, int color) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(sp);
+        t.setTextColor(color);
+        return t;
+    }
+
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#0B0B12"));
-        root.setPadding(dp(24), dp(12), dp(24), dp(8));
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFF0C1124, 0xFF1A1140, 0xFF0A1530});
+        root.setBackground(bg);
+        root.setPadding(dp(28), dp(12), dp(28), dp(8));
 
-        // Юқори қатор: соат
+        // Юқори қатор: соат + сана | об-ҳаво + созламалар
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
 
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
         TextClock clock = new TextClock(this);
         clock.setFormat24Hour("HH:mm");
         clock.setFormat12Hour("HH:mm");
         clock.setTextColor(Color.WHITE);
-        clock.setTextSize(40);
-        top.addView(clock);
-
+        clock.setTextSize(46);
+        clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+        left.addView(clock);
         TextClock date = new TextClock(this);
         date.setFormat24Hour("d MMMM, EEEE");
         date.setFormat12Hour("d MMMM, EEEE");
-        date.setTextColor(Color.parseColor("#8A8FA3"));
-        date.setTextSize(18);
-        date.setPadding(dp(20), 0, 0, 0);
-        top.addView(date);
+        date.setTextColor(0xFF9AA3C0);
+        date.setTextSize(16);
+        left.addView(date);
+        top.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        weather = label("", 20, Color.WHITE);
+        weather.setGravity(Gravity.CENTER);
+        weather.setPadding(dp(18), dp(10), dp(18), dp(10));
+        weather.setBackground(roundRect(0x22FFFFFF, 0x33FFFFFF));
+        weather.setVisibility(View.GONE);
+        LinearLayout.LayoutParams wp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        wp.rightMargin = dp(12);
+        top.addView(weather, wp);
+
+        TextView gear = label("⚙", 26, Color.WHITE);
+        gear.setGravity(Gravity.CENTER);
+        gear.setBackground(roundRect(0x22FFFFFF, 0x33FFFFFF));
+        gear.setClickable(true);
+        gear.setOnClickListener(v -> showSettings());
+        top.addView(gear, new LinearLayout.LayoutParams(dp(52), dp(52)));
 
         root.addView(top, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Бош қатор (севимлилар)
+        // Бош қатор
+        TextView t1 = label("Севимлилар", 13, 0xFF9AA3C0);
+        t1.setPadding(dp(6), dp(10), 0, 0);
+        root.addView(t1);
+
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
         hsv.setOverScrollMode(View.OVER_SCROLL_NEVER);
         favRow = new LinearLayout(this);
         favRow.setOrientation(LinearLayout.HORIZONTAL);
-        favRow.setPadding(0, dp(8), 0, dp(8));
+        favRow.setPadding(0, dp(2), 0, dp(4));
         hsv.addView(favRow);
-        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        root.addView(hsv, hp);
+        root.addView(hsv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // Барча иловалар
+        TextView t2 = label("Иловалар", 13, 0xFF9AA3C0);
+        t2.setPadding(dp(6), dp(4), 0, dp(2));
+        root.addView(t2);
+
         grid = new GridView(this);
         grid.setNumColumns(GridView.AUTO_FIT);
         grid.setColumnWidth(dp(120));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
-        grid.setVerticalSpacing(dp(6));
-        grid.setSelector(new android.graphics.drawable.ColorDrawable(Color.parseColor("#22FFFFFF")));
+        grid.setSelector(new ColorDrawable(Color.TRANSPARENT));
         grid.setOverScrollMode(View.OVER_SCROLL_NEVER);
         grid.setVerticalScrollBarEnabled(false);
-        grid.setFastScrollEnabled(false);
         grid.setSmoothScrollbarEnabled(false);
         adapter = new AppAdapter();
         grid.setAdapter(adapter);
@@ -187,50 +282,58 @@ public class MainActivity extends Activity {
             showMenu(apps.get(pos));
             return true;
         });
-        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        root.addView(grid, gp);
+        root.addView(grid, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
     }
 
-    private View makeTile(final App app, int iconDp, int widthDp, int textSp) {
-        LinearLayout t = new LinearLayout(this);
-        t.setOrientation(LinearLayout.VERTICAL);
-        t.setGravity(Gravity.CENTER_HORIZONTAL);
-        t.setPadding(dp(6), dp(8), dp(6), dp(8));
-        t.setTag(new Holder(t, iconDp, textSp));
-        ((Holder) t.getTag()).bind(app);
-        if (widthDp > 0) {
-            t.setLayoutParams(new LinearLayout.LayoutParams(dp(widthDp),
-                    ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
-        return t;
-    }
-
     private class Holder {
+        final LinearLayout inner;
         final ImageView icon;
         final TextView label;
+        int ver = -1;
 
-        Holder(LinearLayout parent, int iconDp, int textSp) {
+        Holder(LinearLayout inner, int iconDp, int textSp) {
+            this.inner = inner;
             icon = new ImageView(MainActivity.this);
             icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            parent.addView(icon, new LinearLayout.LayoutParams(dp(iconDp), dp(iconDp)));
+            inner.addView(icon, new LinearLayout.LayoutParams(dp(iconDp), dp(iconDp)));
             label = new TextView(MainActivity.this);
             label.setTextColor(Color.WHITE);
             label.setTextSize(textSp);
             label.setSingleLine(true);
             label.setEllipsize(TextUtils.TruncateAt.END);
             label.setGravity(Gravity.CENTER);
-            label.setPadding(0, dp(4), 0, 0);
-            parent.addView(label, new LinearLayout.LayoutParams(
+            label.setPadding(0, dp(5), 0, 0);
+            inner.addView(label, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
 
         void bind(App a) {
+            if (ver != glassVer) {
+                inner.setBackground(glassCS.newDrawable());
+                ver = glassVer;
+            }
             icon.setImageBitmap(a.icon);
             label.setText(a.label);
         }
+    }
+
+    private FrameLayout makeTile(App app, int iconDp, int textSp) {
+        FrameLayout outer = new FrameLayout(this);
+        outer.setPadding(dp(4), dp(4), dp(4), dp(4));
+        LinearLayout inner = new LinearLayout(this);
+        inner.setOrientation(LinearLayout.VERTICAL);
+        inner.setGravity(Gravity.CENTER_HORIZONTAL);
+        inner.setPadding(dp(6), dp(10), dp(6), dp(8));
+        inner.setDuplicateParentStateEnabled(true);
+        outer.addView(inner, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        Holder h = new Holder(inner, iconDp, textSp);
+        outer.setTag(h);
+        h.bind(app);
+        return outer;
     }
 
     private class AppAdapter extends BaseAdapter {
@@ -242,7 +345,7 @@ public class MainActivity extends Activity {
         public View getView(int pos, View convert, ViewGroup parent) {
             App a = apps.get(pos);
             if (convert == null) {
-                convert = makeTile(a, 56, 0, 13);
+                convert = makeTile(a, 52, 13);
                 convert.setLayoutParams(new AbsListView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             } else {
@@ -293,7 +396,6 @@ public class MainActivity extends Activity {
                 adapter.notifyDataSetChanged();
                 ensureDefaultFavs();
                 rebuildFavs();
-                dirty = false;
             });
         });
     }
@@ -305,6 +407,31 @@ public class MainActivity extends Activity {
         d.setBounds(0, 0, s, s);
         d.draw(c);
         return b;
+    }
+
+    private void loadWeather() {
+        lastWeather = SystemClock.elapsedRealtime();
+        net.execute(() -> {
+            try {
+                URL u = new URL("https://api.open-meteo.com/v1/forecast?latitude=41.55&longitude=60.63&current=temperature_2m");
+                HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(8000);
+                BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+                r.close();
+                double t = new JSONObject(sb.toString()).getJSONObject("current").getDouble("temperature_2m");
+                final String txt = Math.round(t) + "°  Урганч";
+                ui.post(() -> {
+                    weather.setText(txt);
+                    weather.setVisibility(View.VISIBLE);
+                });
+            } catch (Exception e) {
+                lastWeather = 0; // кейинги safar қайта уриниш
+            }
+        });
     }
 
     // ---------------------------------------------------------------- севимлилар
@@ -341,10 +468,11 @@ public class MainActivity extends Activity {
         for (String p : getFavs()) {
             final App a = findApp(p);
             if (a == null) continue;
-            View t = makeTile(a, 72, 110, 14);
+            FrameLayout t = makeTile(a, 68, 14);
+            t.setLayoutParams(new LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT));
+            t.setClickable(true);
             t.setOnClickListener(v -> launch(a));
             t.setOnLongClickListener(v -> { showMenu(a); return true; });
-            t.setFocusable(true);
             favRow.addView(t);
         }
     }
@@ -362,7 +490,6 @@ public class MainActivity extends Activity {
         try {
             startActivity(a.intent);
         } catch (Exception e) {
-            dirty = true;
             loadApps();
         }
     }
@@ -370,7 +497,7 @@ public class MainActivity extends Activity {
     private void showMenu(final App a) {
         boolean fav = getFavs().contains(a.pkg);
         String[] items = {
-                fav ? "Бош қатордан олиб ташлаш" : "Бош қаторга қўшиш",
+                fav ? "Севимлилардан олиб ташлаш" : "Севимлиларга қўшиш",
                 "Илова ҳақида",
                 "Ўчириш"
         };
@@ -387,6 +514,33 @@ public class MainActivity extends Activity {
                                 Uri.parse("package:" + a.pkg)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
                     }
                 })
+                .show();
+    }
+
+    private void showSettings() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(16), dp(24), dp(8));
+        final TextView lbl = label("Шиша кучи: " + glass() + "%", 16, Color.WHITE);
+        SeekBar sb = new SeekBar(this);
+        sb.setMax(10);
+        sb.setProgress(glass() / 10);
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                prefs.edit().putInt(KEY_GLASS, p * 10).apply();
+                lbl.setText("Шиша кучи: " + (p * 10) + "%");
+                applyGlass();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) { }
+            @Override public void onStopTrackingTouch(SeekBar s) { }
+        });
+        box.addView(lbl);
+        box.addView(sb);
+        new AlertDialog.Builder(this)
+                .setTitle("Созламалар")
+                .setView(box)
+                .setPositiveButton("Тайёр", null)
                 .show();
     }
 }
