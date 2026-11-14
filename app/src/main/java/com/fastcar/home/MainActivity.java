@@ -110,6 +110,10 @@ public class MainActivity extends Activity {
     private PackageManager pm;
     private GridView grid;
     private AppAdapter adapter;
+    private LinearLayout content, appsPanel;
+    private AppAdapter appsAdapter;
+    private GridView appsGrid;
+    private boolean started, showingApps;
     private final List<App> favItems = new ArrayList<>();
     private App plusApp;
     private TextView weather;
@@ -213,6 +217,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        started = true;
         if (lastWeather == 0 || SystemClock.elapsedRealtime() - lastWeather > WEATHER_EVERY_MS) {
             loadWeather();
         }
@@ -226,6 +231,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onStop() {
+        started = false;
+        showApps(false);
         ui.removeCallbacks(tick);
         try { lm.removeUpdates(locListener); } catch (Exception ignored) { }
         super.onStop();
@@ -245,12 +252,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        // «Домой» на самом лаунчере: дашборд ⇄ все приложения.
+        // Если лаунчер вернулся из другого приложения — всегда дашборд.
+        showApps(started && !showingApps);
         if (grid != null) grid.setSelection(0);
     }
 
     @Override
     public void onBackPressed() {
-        // на главном экране «назад» ничего не делает
+        if (showingApps) showApps(false);
     }
 
     // ---------------------------------------------------------------- стекло
@@ -288,6 +298,7 @@ public class MainActivity extends Activity {
         rebuildGlass();
         for (View v : cards) v.setBackground(glassCS.newDrawable());
         adapter.notifyDataSetChanged();
+        appsAdapter.notifyDataSetChanged();
         rebuildFavs();
     }
 
@@ -320,7 +331,7 @@ public class MainActivity extends Activity {
                 new int[]{0xFF070A18, 0xFF110C2C, 0xFF06101F}));
         root.setPadding(dp(20), dp(8), dp(20), dp(8));
 
-        LinearLayout content = new LinearLayout(this);
+        content = new LinearLayout(this);
         content.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(content, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -415,6 +426,29 @@ public class MainActivity extends Activity {
             return true;
         });
         right.addView(grid, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.4f));
+
+        appsPanel = new LinearLayout(this);
+        appsPanel.setOrientation(LinearLayout.VERTICAL);
+        appsPanel.setVisibility(View.GONE);
+        TextView ah = label("Все приложения", 14, MUTED);
+        ah.setPadding(dp(8), dp(4), 0, dp(4));
+        appsPanel.addView(ah);
+        GridView ag = new GridView(this);
+        ag.setNumColumns(GridView.AUTO_FIT);
+        ag.setColumnWidth(dp(112));
+        ag.setVerticalSpacing(dp(6));
+        ag.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
+        ag.setSelector(new ColorDrawable(Color.TRANSPARENT));
+        ag.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        ag.setVerticalScrollBarEnabled(false);
+        ag.setSmoothScrollbarEnabled(false);
+        appsAdapter = new AppAdapter(apps);
+        ag.setAdapter(appsAdapter);
+        ag.setOnItemClickListener((pp, v, pos, id) -> launch(apps.get(pos)));
+        ag.setOnItemLongClickListener((pp, v, pos, id) -> { showMenu(apps.get(pos)); return true; });
+        appsPanel.addView(ag, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        appsGrid = ag;
+        root.addView(appsPanel, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
     }
@@ -657,6 +691,7 @@ public class MainActivity extends Activity {
                 apps.clear();
                 apps.addAll(out);
                 radioPkg = findRadioPkg();
+                appsAdapter.notifyDataSetChanged();
                 ensureDefaultFavs();
                 rebuildFavs();
                 refreshMedia();
@@ -994,6 +1029,14 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
+    }
+
+    private void showApps(boolean show) {
+        if (content == null || appsPanel == null) return;
+        showingApps = show;
+        content.setVisibility(show ? View.GONE : View.VISIBLE);
+        appsPanel.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (show && appsGrid != null) appsGrid.setSelection(0);
     }
 
     private void toggleFav(App a) {
