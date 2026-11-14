@@ -14,6 +14,8 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
@@ -23,6 +25,7 @@ import android.graphics.drawable.StateListDrawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -35,6 +38,7 @@ import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
@@ -83,7 +87,8 @@ public class MainActivity extends Activity {
 
     private static final String PREFS = "fast_launcher";
     private static final String KEY_FAVS = "favs5";
-    private static final String KEY_GLASS = "glass";
+    private static final String KEY_GLASS = "glass2";
+    private static final String PLUS_PKG = "__plus__";
     private static final long WEATHER_EVERY_MS = 30L * 60L * 1000L;
     private static final int REQ_LOC = 11;
     private static final String MUSIC_PKG = "ru.yandex.music";
@@ -103,9 +108,10 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private PackageManager pm;
-    private LinearLayout favRow;
     private GridView grid;
     private AppAdapter adapter;
+    private final List<App> favItems = new ArrayList<>();
+    private App plusApp;
     private TextView weather;
     private GaugeView gauge;
     private float density;
@@ -123,6 +129,11 @@ public class MainActivity extends Activity {
     private MediaController mc;
     private boolean sessionsRegistered = false;
     private Bitmap lastArt;
+
+    // радио
+    private TextView tvRadioTitle, tvRadioSub;
+    private MediaController radioCtl;
+    private String radioPkg;
 
     // GPS
     private LocationManager lm;
@@ -145,6 +156,12 @@ public class MainActivity extends Activity {
     private final MediaController.Callback mcCallback = new MediaController.Callback() {
         @Override public void onMetadataChanged(MediaMetadata m) { updateMusicUi(); }
         @Override public void onPlaybackStateChanged(PlaybackState s) { updateMusicUi(); }
+        @Override public void onSessionDestroyed() { refreshMedia(); }
+    };
+
+    private final MediaController.Callback radioCallback = new MediaController.Callback() {
+        @Override public void onMetadataChanged(MediaMetadata m) { updateRadioUi(); }
+        @Override public void onPlaybackStateChanged(PlaybackState st) { updateRadioUi(); }
         @Override public void onSessionDestroyed() { refreshMedia(); }
     };
 
@@ -219,6 +236,7 @@ public class MainActivity extends Activity {
         try { unregisterReceiver(pkgReceiver); } catch (Exception ignored) { }
         try { if (sessionsRegistered) msm.removeOnActiveSessionsChangedListener(sessionsListener); } catch (Exception ignored) { }
         if (mc != null) { try { mc.unregisterCallback(mcCallback); } catch (Exception ignored) { } }
+        if (radioCtl != null) { try { radioCtl.unregisterCallback(radioCallback); } catch (Exception ignored) { } }
         io.shutdownNow();
         net.shutdownNow();
         super.onDestroy();
@@ -242,13 +260,13 @@ public class MainActivity extends Activity {
     }
 
     private int glass() {
-        return prefs.getInt(KEY_GLASS, 50);
+        return prefs.getInt(KEY_GLASS, 30);
     }
 
     private GradientDrawable roundRect(int fill, int stroke) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(fill);
-        g.setCornerRadius(dp(18));
+        g.setCornerRadius(dp(22));
         g.setStroke(dp(1), stroke);
         return g;
     }
@@ -299,7 +317,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFF0C1124, 0xFF1A1140, 0xFF0A1530}));
+                new int[]{0xFF070A18, 0xFF110C2C, 0xFF06101F}));
         root.setPadding(dp(20), dp(8), dp(20), dp(8));
 
         LinearLayout content = new LinearLayout(this);
@@ -341,7 +359,7 @@ public class MainActivity extends Activity {
         clock.setFormat24Hour("HH:mm");
         clock.setFormat12Hour("HH:mm");
         clock.setTextColor(Color.WHITE);
-        clock.setTextSize(54);
+        clock.setTextSize(60);
         clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         clock.setIncludeFontPadding(false);
         clockCard.addView(clock, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
@@ -370,35 +388,33 @@ public class MainActivity extends Activity {
         buildRadioCard(widgets);
 
         TextView t1 = label("Избранное", 12, MUTED);
-        t1.setPadding(dp(4), dp(6), 0, dp(2));
+        t1.setPadding(dp(4), dp(8), 0, dp(2));
         right.addView(t1);
-        HorizontalScrollView hsv = new HorizontalScrollView(this);
-        hsv.setHorizontalScrollBarEnabled(false);
-        hsv.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        favRow = new LinearLayout(this);
-        favRow.setOrientation(LinearLayout.HORIZONTAL);
-        hsv.addView(favRow);
-        right.addView(hsv, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
-
-        TextView t2 = label("Приложения", 12, MUTED);
-        t2.setPadding(dp(4), dp(4), 0, dp(2));
-        right.addView(t2);
+        plusApp = new App();
+        plusApp.pkg = PLUS_PKG;
+        plusApp.label = "Добавить";
+        plusApp.icon = plusBitmap();
         grid = new GridView(this);
         grid.setNumColumns(GridView.AUTO_FIT);
-        grid.setColumnWidth(dp(104));
+        grid.setColumnWidth(dp(112));
+        grid.setVerticalSpacing(dp(6));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setSelector(new ColorDrawable(Color.TRANSPARENT));
         grid.setOverScrollMode(View.OVER_SCROLL_NEVER);
         grid.setVerticalScrollBarEnabled(false);
         grid.setSmoothScrollbarEnabled(false);
-        adapter = new AppAdapter();
+        adapter = new AppAdapter(favItems);
         grid.setAdapter(adapter);
-        grid.setOnItemClickListener((p, v, pos, id) -> launch(apps.get(pos)));
+        grid.setOnItemClickListener((p, v, pos, id) -> {
+            App a = favItems.get(pos);
+            if (PLUS_PKG.equals(a.pkg)) showPicker(); else launch(a);
+        });
         grid.setOnItemLongClickListener((p, v, pos, id) -> {
-            showMenu(apps.get(pos));
+            App a = favItems.get(pos);
+            if (!PLUS_PKG.equals(a.pkg)) showMenu(a);
             return true;
         });
-        right.addView(grid, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.1f));
+        right.addView(grid, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.4f));
 
         setContentView(root);
     }
@@ -495,11 +511,31 @@ public class MainActivity extends Activity {
         chip.setCornerRadius(dp(20));
         fm.setBackground(chip);
         radio.addView(fm, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
-        TextView t = label("Радио", 26, Color.WHITE);
-        t.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-        t.setPadding(0, dp(6), 0, 0);
-        radio.addView(t);
-        radio.addView(label("Нажмите, чтобы открыть", 12, MUTED));
+        tvRadioTitle = label("Радио", 24, Color.WHITE);
+        tvRadioTitle.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+        tvRadioTitle.setSingleLine(true);
+        tvRadioTitle.setEllipsize(TextUtils.TruncateAt.END);
+        tvRadioTitle.setPadding(0, dp(4), 0, 0);
+        radio.addView(tvRadioTitle);
+        tvRadioSub = label("Нажмите, чтобы открыть", 12, MUTED);
+        tvRadioSub.setSingleLine(true);
+        tvRadioSub.setEllipsize(TextUtils.TruncateAt.END);
+        radio.addView(tvRadioSub);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        IconView prev = new IconView(this, IconView.PREV);
+        prev.setOnClickListener(v -> radioStep(false));
+        IconView next = new IconView(this, IconView.NEXT);
+        next.setOnClickListener(v -> radioStep(true));
+        row.addView(prev, new LinearLayout.LayoutParams(dp(48), dp(40)));
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(dp(48), dp(40));
+        np.leftMargin = dp(18);
+        row.addView(next, np);
+        LinearLayout.LayoutParams rl = lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0);
+        rl.topMargin = dp(6);
+        radio.addView(row, rl);
     }
 
     // ---------------------------------------------------------------- плитки
@@ -514,6 +550,13 @@ public class MainActivity extends Activity {
             this.inner = inner;
             icon = new ImageView(MainActivity.this);
             icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            icon.setClipToOutline(true);
+            icon.setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View v, Outline o) {
+                    o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), v.getWidth() * 0.22f);
+                }
+            });
             inner.addView(icon, new LinearLayout.LayoutParams(dp(iconDp), dp(iconDp)));
             label = new TextView(MainActivity.this);
             label.setTextColor(Color.WHITE);
@@ -542,7 +585,7 @@ public class MainActivity extends Activity {
         LinearLayout inner = new LinearLayout(this);
         inner.setOrientation(LinearLayout.VERTICAL);
         inner.setGravity(Gravity.CENTER_HORIZONTAL);
-        inner.setPadding(dp(4), dp(8), dp(4), dp(6));
+        inner.setPadding(dp(4), dp(10), dp(4), dp(8));
         inner.setDuplicateParentStateEnabled(true);
         outer.addView(inner, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -553,15 +596,19 @@ public class MainActivity extends Activity {
     }
 
     private class AppAdapter extends BaseAdapter {
-        @Override public int getCount() { return apps.size(); }
-        @Override public Object getItem(int i) { return apps.get(i); }
+        private final List<App> data;
+
+        AppAdapter(List<App> data) { this.data = data; }
+
+        @Override public int getCount() { return data.size(); }
+        @Override public Object getItem(int i) { return data.get(i); }
         @Override public long getItemId(int i) { return i; }
 
         @Override
         public View getView(int pos, View convert, ViewGroup parent) {
-            App a = apps.get(pos);
+            App a = data.get(pos);
             if (convert == null) {
-                convert = makeTile(a, 44, 12);
+                convert = makeTile(a, 60, 14);
                 convert.setLayoutParams(new AbsListView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             } else {
@@ -609,9 +656,10 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 apps.clear();
                 apps.addAll(out);
-                adapter.notifyDataSetChanged();
+                radioPkg = findRadioPkg();
                 ensureDefaultFavs();
                 rebuildFavs();
+                refreshMedia();
             });
         });
     }
@@ -622,6 +670,20 @@ public class MainActivity extends Activity {
         Canvas c = new Canvas(b);
         d.setBounds(0, 0, s, s);
         d.draw(c);
+        return b;
+    }
+
+    private Bitmap plusBitmap() {
+        int sz = dp(64);
+        Bitmap b = Bitmap.createBitmap(sz, sz, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(b);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setColor(0x33FFFFFF);
+        c.drawRoundRect(new RectF(0, 0, sz, sz), sz * 0.22f, sz * 0.22f, p);
+        p.setColor(0xFFFFFFFF);
+        float t = sz * 0.06f, m = sz * 0.5f, l = sz * 0.28f;
+        c.drawRoundRect(new RectF(m - l, m - t / 2, m + l, m + t / 2), t / 2, t / 2, p);
+        c.drawRoundRect(new RectF(m - t / 2, m - l, m + t / 2, m + l), t / 2, t / 2, p);
         return b;
     }
 
@@ -697,20 +759,74 @@ public class MainActivity extends Activity {
     }
 
     private void pickController(List<MediaController> list) {
-        MediaController best = null;
+        MediaController best = null, radio = null;
         if (list != null) {
+            List<MediaController> others = new ArrayList<>();
             for (MediaController c : list) {
+                if (radioPkg != null && radioPkg.equals(c.getPackageName())) radio = c; else others.add(c);
+            }
+            for (MediaController c : others) {
                 if (MUSIC_PKG.equals(c.getPackageName())) { best = c; break; }
             }
             if (best == null) {
-                for (MediaController c : list) {
-                    PlaybackState s = c.getPlaybackState();
-                    if (s != null && s.getState() == PlaybackState.STATE_PLAYING) { best = c; break; }
+                for (MediaController c : others) {
+                    PlaybackState st = c.getPlaybackState();
+                    if (st != null && st.getState() == PlaybackState.STATE_PLAYING) { best = c; break; }
                 }
             }
-            if (best == null && !list.isEmpty()) best = list.get(0);
+            if (best == null && !others.isEmpty()) best = others.get(0);
         }
+        setRadioController(radio);
         setController(best);
+    }
+
+    private void setRadioController(MediaController c) {
+        if (radioCtl != null) {
+            if (c != null && radioCtl.getSessionToken().equals(c.getSessionToken())) { updateRadioUi(); return; }
+            try { radioCtl.unregisterCallback(radioCallback); } catch (Exception ignored) { }
+        }
+        radioCtl = c;
+        if (radioCtl != null) radioCtl.registerCallback(radioCallback, ui);
+        updateRadioUi();
+    }
+
+    private void updateRadioUi() {
+        if (radioCtl == null) {
+            tvRadioTitle.setText("Радио");
+            tvRadioSub.setText("Нажмите, чтобы открыть");
+            return;
+        }
+        MediaMetadata m = radioCtl.getMetadata();
+        String t = m == null ? null : m.getString(MediaMetadata.METADATA_KEY_TITLE);
+        String a = m == null ? null : m.getString(MediaMetadata.METADATA_KEY_ARTIST);
+        tvRadioTitle.setText(t == null || t.isEmpty() ? "Радио" : t);
+        tvRadioSub.setText(a == null || a.isEmpty() ? "FM" : a);
+    }
+
+    private void sendMediaKey(int code) {
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            long t = SystemClock.uptimeMillis();
+            am.dispatchMediaKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0));
+            am.dispatchMediaKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0));
+        } catch (Exception ignored) { }
+    }
+
+    private void radioStep(boolean next) {
+        if (radioCtl != null) {
+            if (next) radioCtl.getTransportControls().skipToNext();
+            else radioCtl.getTransportControls().skipToPrevious();
+        } else {
+            sendMediaKey(next ? KeyEvent.KEYCODE_MEDIA_NEXT : KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+        }
+    }
+
+    private String findRadioPkg() {
+        for (App a : apps) {
+            String l = a.label.toLowerCase(Locale.ROOT);
+            if (l.equals("радио") || l.equals("radio") || l.equals("fm")) return a.pkg;
+        }
+        return null;
     }
 
     private void setController(MediaController c) {
@@ -842,17 +958,42 @@ public class MainActivity extends Activity {
     }
 
     private void rebuildFavs() {
-        favRow.removeAllViews();
+        favItems.clear();
         for (String p : getFavs()) {
-            final App a = findApp(p);
-            if (a == null) continue;
-            FrameLayout t = makeTile(a, 48, 13);
-            t.setLayoutParams(new LinearLayout.LayoutParams(dp(108), ViewGroup.LayoutParams.WRAP_CONTENT));
-            t.setClickable(true);
-            t.setOnClickListener(v -> launch(a));
-            t.setOnLongClickListener(v -> { showMenu(a); return true; });
-            favRow.addView(t);
+            App a = findApp(p);
+            if (a != null) favItems.add(a);
         }
+        favItems.add(plusApp);
+        adapter.notifyDataSetChanged();
+    }
+
+    private void showPicker() {
+        final List<App> list = new ArrayList<>(apps);
+        final List<String> favs = getFavs();
+        final boolean[] checked = new boolean[list.size()];
+        String[] names = new String[list.size()];
+        for (int i = 0; i < list.size(); i++) {
+            names[i] = list.get(i).label;
+            checked[i] = favs.contains(list.get(i).pkg);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Выберите приложения")
+                .setMultiChoiceItems(names, checked, (d, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("Готово", (d, w) -> {
+                    List<String> out = new ArrayList<>();
+                    for (String p : favs) {
+                        for (int i = 0; i < list.size(); i++) {
+                            if (list.get(i).pkg.equals(p) && checked[i]) { out.add(p); break; }
+                        }
+                    }
+                    for (int i = 0; i < list.size(); i++) {
+                        if (checked[i] && !out.contains(list.get(i).pkg)) out.add(list.get(i).pkg);
+                    }
+                    saveFavs(out);
+                    rebuildFavs();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
     private void toggleFav(App a) {
@@ -942,6 +1083,19 @@ public class MainActivity extends Activity {
         });
     }
 
+    private String activePlayers() {
+        if (!hasListenerAccess()) return "нет доступа к уведомлениям";
+        try {
+            List<MediaController> l = msm.getActiveSessions(listener);
+            if (l == null || l.isEmpty()) return "нет активных";
+            List<String> n = new ArrayList<>();
+            for (MediaController c : l) n.add(c.getPackageName());
+            return TextUtils.join(", ", n);
+        } catch (Exception e) {
+            return "ошибка";
+        }
+    }
+
     private void showSettings() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -969,6 +1123,9 @@ public class MainActivity extends Activity {
         upd.setText("Проверить обновления");
         upd.setOnClickListener(v -> checkUpdate(true));
         box.addView(upd);
+        final TextView diag = label("Плееры: " + activePlayers(), 12, MUTED);
+        diag.setPadding(0, dp(12), 0, 0);
+        box.addView(diag);
         new AlertDialog.Builder(this)
                 .setTitle("Настройки лаунчера")
                 .setView(box)
