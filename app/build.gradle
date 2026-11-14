@@ -8,16 +8,25 @@ android {
         applicationId 'com.fastcar.home'
         minSdk 24
         targetSdk 33
-        versionCode 2
-        versionName '2.0'
+        // GitHub Actions ҳар йиғишда рақамни оширади (run_number)
+        versionCode (project.findProperty('appVersionCode') ?: '3').toInteger()
+        versionName (project.findProperty('appVersionName') ?: '3.0')
+    }
+    signingConfigs {
+        release {
+            // Доимий калит: янгиланишлар ўрнатилган лаунчер устига тушиши учун шарт
+            storeFile file('release.jks')
+            storePassword 'fastlauncher'
+            keyAlias 'fastlauncher'
+            keyPassword 'fastlauncher'
+        }
     }
     buildTypes {
         release {
             minifyEnabled true
             shrinkResources true
             debuggable false
-            // debug калит билан имзоланади — тўғридан-тўғри ўрнатса бўлади
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
     compileOptions {

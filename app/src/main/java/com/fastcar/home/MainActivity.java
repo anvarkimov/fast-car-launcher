@@ -28,6 +28,8 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AbsListView;
+import android.widget.Button;
+import android.widget.Toast;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.GridView;
@@ -128,6 +130,9 @@ public class MainActivity extends Activity {
         super.onStart();
         if (SystemClock.elapsedRealtime() - lastWeather > WEATHER_EVERY_MS || lastWeather == 0) {
             loadWeather();
+        }
+        if (System.currentTimeMillis() - prefs.getLong("upd_ts", 0) > 6L * 3600L * 1000L) {
+            checkUpdate(false);
         }
     }
 
@@ -517,6 +522,53 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    // ---------------------------------------------------------------- ўз-ўзидан янгилаш
+
+    private void checkUpdate(final boolean manual) {
+        prefs.edit().putLong("upd_ts", System.currentTimeMillis()).apply();
+        net.execute(() -> {
+            try {
+                final Updater.Info info = Updater.fetchLatest();
+                if (info != null && info.code > Updater.currentCode(this)) {
+                    ui.post(() -> askUpdate(info));
+                } else if (manual) {
+                    ui.post(() -> Toast.makeText(this, "Охирги версия ўрнатилган", Toast.LENGTH_SHORT).show());
+                }
+            } catch (Exception e) {
+                if (manual) {
+                    ui.post(() -> Toast.makeText(this, "Текшириб бўлмади (интернет?)", Toast.LENGTH_SHORT).show());
+                }
+            }
+        });
+    }
+
+    private void askUpdate(final Updater.Info info) {
+        if (isFinishing()) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Янги версия бор")
+                .setMessage("Лаунчер " + info.tag + " чиқди. Янгилайсизми?")
+                .setPositiveButton("Янгилаш", (d, w) -> startUpdate(info))
+                .setNegativeButton("Кейин", null)
+                .show();
+    }
+
+    private void startUpdate(final Updater.Info info) {
+        if (!pm.canRequestPackageInstalls()) {
+            Toast.makeText(this, "Рухсат беринг, кейин қайта “Янгилаш”ни босинг", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        Toast.makeText(this, "Юкланяпти…", Toast.LENGTH_LONG).show();
+        net.execute(() -> {
+            try {
+                Updater.downloadAndInstall(getApplicationContext(), info.url);
+            } catch (Exception e) {
+                ui.post(() -> Toast.makeText(this, "Юклаб бўлмади: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
     private void showSettings() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -537,6 +589,13 @@ public class MainActivity extends Activity {
         });
         box.addView(lbl);
         box.addView(sb);
+        final TextView ver = label("Версия: " + Updater.currentCode(this), 14, 0xFF9AA3C0);
+        ver.setPadding(0, dp(18), 0, dp(6));
+        box.addView(ver);
+        Button upd = new Button(this);
+        upd.setText("Янгиланишни текшириш");
+        upd.setOnClickListener(v -> checkUpdate(true));
+        box.addView(upd);
         new AlertDialog.Builder(this)
                 .setTitle("Созламалар")
                 .setView(box)
