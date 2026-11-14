@@ -1,8 +1,10 @@
 package com.fastcar.home;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -12,11 +14,19 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.media.MediaMetadata;
+import android.media.session.MediaController;
+import android.media.session.MediaSessionManager;
+import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -27,10 +37,10 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.widget.AbsListView;
-import android.widget.Button;
-import android.widget.Toast;
 import android.widget.BaseAdapter;
+import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.HorizontalScrollView;
@@ -39,6 +49,7 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextClock;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
@@ -57,10 +68,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Енгил лаунчер, Mi Box'даги "Уй экрани" услубида: шиша (glass) кўринишдаги
- * юмалоқ карточкалар, катта соат, об-ҳаво, бош қатор ва иловалар.
- * Ҳақиқий blur ишлатилмайди (магнитолада қотирмаслик учун) — фақат
- * шаффоф юмалоқ карточкалар ва юпқа чизиқ.
+ * Лёгкий лаунчер для автомагнитолы, стиль «тёмное стекло».
+ * Часы и погода, спидометр (GPS), плеер (Яндекс Музыка), радио,
+ * избранное и все приложения. Без blur и анимаций.
  */
 public class MainActivity extends Activity {
 
@@ -72,18 +82,21 @@ public class MainActivity extends Activity {
     }
 
     private static final String PREFS = "fast_launcher";
-    private static final String KEY_FAVS = "favs";
+    private static final String KEY_FAVS = "favs5";
     private static final String KEY_GLASS = "glass";
     private static final long WEATHER_EVERY_MS = 30L * 60L * 1000L;
+    private static final int REQ_LOC = 11;
+    private static final String MUSIC_PKG = "ru.yandex.music";
+    private static final int MUTED = 0xFF9AA3C0;
 
     private static final String[] DEFAULT_FAVS = {
-            "com.google.android.apps.maps", "ru.yandex.yandexnavi", "ru.yandex.yandexmaps",
-            "com.waze", "com.google.android.youtube", "com.android.vending",
-            "com.android.settings"
+            "ru.yandex.yandexnavi", "ru.yandex.music", "com.google.android.apps.maps",
+            "com.google.android.youtube", "com.android.vending", "com.android.settings"
     };
 
     private final List<App> apps = new ArrayList<>();
     private final Map<String, Bitmap> iconCache = new HashMap<>();
+    private final List<View> cards = new ArrayList<>();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService net = Executors.newSingleThreadExecutor();
@@ -94,10 +107,25 @@ public class MainActivity extends Activity {
     private GridView grid;
     private AppAdapter adapter;
     private TextView weather;
+    private GaugeView gauge;
     private float density;
     private int glassVer = 0;
     private Drawable.ConstantState glassCS;
     private long lastWeather = 0;
+
+    // музыка
+    private TextView tvCaption, tvTitle, tvArtist, coverNote;
+    private ImageView coverImg;
+    private BarView bar;
+    private IconView btnPlay;
+    private MediaSessionManager msm;
+    private ComponentName listener;
+    private MediaController mc;
+    private boolean sessionsRegistered = false;
+    private Bitmap lastArt;
+
+    // GPS
+    private LocationManager lm;
 
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override
@@ -106,12 +134,52 @@ public class MainActivity extends Activity {
         }
     };
 
+    private final MediaSessionManager.OnActiveSessionsChangedListener sessionsListener =
+            new MediaSessionManager.OnActiveSessionsChangedListener() {
+                @Override
+                public void onActiveSessionsChanged(List<MediaController> list) {
+                    pickController(list);
+                }
+            };
+
+    private final MediaController.Callback mcCallback = new MediaController.Callback() {
+        @Override public void onMetadataChanged(MediaMetadata m) { updateMusicUi(); }
+        @Override public void onPlaybackStateChanged(PlaybackState s) { updateMusicUi(); }
+        @Override public void onSessionDestroyed() { refreshMedia(); }
+    };
+
+    private final LocationListener locListener = new LocationListener() {
+        @Override
+        public void onLocationChanged(Location l) {
+            if (l.hasSpeed()) {
+                int kmh = Math.round(l.getSpeed() * 3.6f);
+                gauge.setSpeed(kmh < 2 ? 0 : kmh);
+            }
+        }
+        @Override public void onStatusChanged(String p, int s, Bundle e) { }
+        @Override public void onProviderEnabled(String p) { }
+        @Override public void onProviderDisabled(String p) { gauge.setSpeed(-1); }
+    };
+
+    private final Runnable tick = new Runnable() {
+        @Override
+        public void run() {
+            updateProgress();
+            ui.postDelayed(this, 1000);
+        }
+    };
+
+    // ---------------------------------------------------------------- жизненный цикл
+
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         pm = getPackageManager();
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         density = getResources().getDisplayMetrics().density;
+        msm = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
+        lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        listener = new ComponentName(this, MediaListener.class);
         rebuildGlass();
         buildUi();
 
@@ -128,17 +196,29 @@ public class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
-        if (SystemClock.elapsedRealtime() - lastWeather > WEATHER_EVERY_MS || lastWeather == 0) {
+        if (lastWeather == 0 || SystemClock.elapsedRealtime() - lastWeather > WEATHER_EVERY_MS) {
             loadWeather();
         }
         if (System.currentTimeMillis() - prefs.getLong("upd_ts", 0) > 6L * 3600L * 1000L) {
             checkUpdate(false);
         }
+        startLocation();
+        refreshMedia();
+        ui.post(tick);
+    }
+
+    @Override
+    protected void onStop() {
+        ui.removeCallbacks(tick);
+        try { lm.removeUpdates(locListener); } catch (Exception ignored) { }
+        super.onStop();
     }
 
     @Override
     protected void onDestroy() {
         try { unregisterReceiver(pkgReceiver); } catch (Exception ignored) { }
+        try { if (sessionsRegistered) msm.removeOnActiveSessionsChangedListener(sessionsListener); } catch (Exception ignored) { }
+        if (mc != null) { try { mc.unregisterCallback(mcCallback); } catch (Exception ignored) { } }
         io.shutdownNow();
         net.shutdownNow();
         super.onDestroy();
@@ -152,10 +232,10 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // бош экранда "орқага" ҳеч нима қилмайди
+        // на главном экране «назад» ничего не делает
     }
 
-    // ---------------------------------------------------------------- шиша услуби
+    // ---------------------------------------------------------------- стекло
 
     private int dp(int v) {
         return Math.round(v * density);
@@ -188,11 +268,12 @@ public class MainActivity extends Activity {
 
     private void applyGlass() {
         rebuildGlass();
+        for (View v : cards) v.setBackground(glassCS.newDrawable());
         adapter.notifyDataSetChanged();
         rebuildFavs();
     }
 
-    // ---------------------------------------------------------------- UI
+    // ---------------------------------------------------------------- интерфейс
 
     private TextView label(String text, int sp, int color) {
         TextView t = new TextView(this);
@@ -202,79 +283,109 @@ public class MainActivity extends Activity {
         return t;
     }
 
+    private LinearLayout.LayoutParams lp(int w, int h, float weight) {
+        return new LinearLayout.LayoutParams(w, h, weight);
+    }
+
+    private LinearLayout card(int orientation) {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(orientation);
+        l.setBackground(glassCS.newDrawable());
+        cards.add(l);
+        return l;
+    }
+
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFF0C1124, 0xFF1A1140, 0xFF0A1530});
-        root.setBackground(bg);
-        root.setPadding(dp(28), dp(12), dp(28), dp(8));
+        root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFF0C1124, 0xFF1A1140, 0xFF0A1530}));
+        root.setPadding(dp(20), dp(8), dp(20), dp(8));
 
-        // Юқори қатор: соат + сана | об-ҳаво + созламалар
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.HORIZONTAL);
+        root.addView(content, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // ===== левая колонка: часы + спидометр =====
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        content.addView(left, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.32f));
+
+        LinearLayout clockCard = card(LinearLayout.VERTICAL);
+        clockCard.setPadding(dp(16), dp(10), dp(16), dp(8));
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-
-        LinearLayout left = new LinearLayout(this);
-        left.setOrientation(LinearLayout.VERTICAL);
+        TextClock date = new TextClock(this);
+        date.setFormat24Hour("d MMMM, EEEE");
+        date.setFormat12Hour("d MMMM, EEEE");
+        date.setTextColor(MUTED);
+        date.setTextSize(14);
+        date.setSingleLine(true);
+        date.setEllipsize(TextUtils.TruncateAt.END);
+        top.addView(date, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        weather = label("", 14, Color.WHITE);
+        weather.setPadding(dp(10), dp(4), dp(10), dp(4));
+        weather.setBackground(roundRect(0x22FFFFFF, 0x33FFFFFF));
+        weather.setVisibility(View.GONE);
+        top.addView(weather, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
+        TextView gear = label("⚙", 20, Color.WHITE);
+        gear.setGravity(Gravity.CENTER);
+        gear.setClickable(true);
+        gear.setOnClickListener(v -> showSettings());
+        LinearLayout.LayoutParams gp = lp(dp(36), dp(36), 0);
+        gp.leftMargin = dp(8);
+        top.addView(gear, gp);
+        clockCard.addView(top, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
         TextClock clock = new TextClock(this);
         clock.setFormat24Hour("HH:mm");
         clock.setFormat12Hour("HH:mm");
         clock.setTextColor(Color.WHITE);
-        clock.setTextSize(46);
+        clock.setTextSize(54);
         clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-        left.addView(clock);
-        TextClock date = new TextClock(this);
-        date.setFormat24Hour("d MMMM, EEEE");
-        date.setFormat12Hour("d MMMM, EEEE");
-        date.setTextColor(0xFF9AA3C0);
-        date.setTextSize(16);
-        left.addView(date);
-        top.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        clock.setIncludeFontPadding(false);
+        clockCard.addView(clock, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
+        LinearLayout.LayoutParams cp = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0);
+        cp.bottomMargin = dp(10);
+        left.addView(clockCard, cp);
 
-        weather = label("", 20, Color.WHITE);
-        weather.setGravity(Gravity.CENTER);
-        weather.setPadding(dp(18), dp(10), dp(18), dp(10));
-        weather.setBackground(roundRect(0x22FFFFFF, 0x33FFFFFF));
-        weather.setVisibility(View.GONE);
-        LinearLayout.LayoutParams wp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        wp.rightMargin = dp(12);
-        top.addView(weather, wp);
+        LinearLayout speedCard = card(LinearLayout.VERTICAL);
+        speedCard.setPadding(dp(10), dp(10), dp(10), dp(10));
+        gauge = new GaugeView(this);
+        speedCard.addView(gauge, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        left.addView(speedCard, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        TextView gear = label("⚙", 26, Color.WHITE);
-        gear.setGravity(Gravity.CENTER);
-        gear.setBackground(roundRect(0x22FFFFFF, 0x33FFFFFF));
-        gear.setClickable(true);
-        gear.setOnClickListener(v -> showSettings());
-        top.addView(gear, new LinearLayout.LayoutParams(dp(52), dp(52)));
+        // ===== правая колонка =====
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams rp = lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.68f);
+        rp.leftMargin = dp(10);
+        content.addView(right, rp);
 
-        root.addView(top, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout widgets = new LinearLayout(this);
+        widgets.setOrientation(LinearLayout.HORIZONTAL);
+        right.addView(widgets, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // Бош қатор
-        TextView t1 = label("Севимлилар", 13, 0xFF9AA3C0);
-        t1.setPadding(dp(6), dp(10), 0, 0);
-        root.addView(t1);
+        buildMusicCard(widgets);
+        buildRadioCard(widgets);
 
+        TextView t1 = label("Избранное", 12, MUTED);
+        t1.setPadding(dp(4), dp(6), 0, dp(2));
+        right.addView(t1);
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
         hsv.setOverScrollMode(View.OVER_SCROLL_NEVER);
         favRow = new LinearLayout(this);
         favRow.setOrientation(LinearLayout.HORIZONTAL);
-        favRow.setPadding(0, dp(2), 0, dp(4));
         hsv.addView(favRow);
-        root.addView(hsv, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        right.addView(hsv, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
 
-        // Барча иловалар
-        TextView t2 = label("Иловалар", 13, 0xFF9AA3C0);
-        t2.setPadding(dp(6), dp(4), 0, dp(2));
-        root.addView(t2);
-
+        TextView t2 = label("Приложения", 12, MUTED);
+        t2.setPadding(dp(4), dp(4), 0, dp(2));
+        right.addView(t2);
         grid = new GridView(this);
         grid.setNumColumns(GridView.AUTO_FIT);
-        grid.setColumnWidth(dp(120));
+        grid.setColumnWidth(dp(104));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setSelector(new ColorDrawable(Color.TRANSPARENT));
         grid.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -287,11 +398,111 @@ public class MainActivity extends Activity {
             showMenu(apps.get(pos));
             return true;
         });
-        root.addView(grid, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        right.addView(grid, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.1f));
 
         setContentView(root);
     }
+
+    private void buildMusicCard(LinearLayout widgets) {
+        LinearLayout music = card(LinearLayout.HORIZONTAL);
+        music.setGravity(Gravity.CENTER_VERTICAL);
+        music.setPadding(dp(12), dp(10), dp(12), dp(10));
+        music.setOnClickListener(v -> onMusicCardClick());
+        LinearLayout.LayoutParams mp = lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+        mp.rightMargin = dp(10);
+        widgets.addView(music, mp);
+
+        FrameLayout cover = new FrameLayout(this);
+        GradientDrawable cg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFF7C3AED, 0xFFEC4899});
+        cg.setCornerRadius(dp(14));
+        cover.setBackground(cg);
+        cover.setClipToOutline(true);
+        cover.setOutlineProvider(new ViewOutlineProvider() {
+            @Override
+            public void getOutline(View v, Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), dp(14));
+            }
+        });
+        coverNote = label("♪", 30, Color.WHITE);
+        coverNote.setGravity(Gravity.CENTER);
+        cover.addView(coverNote, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        coverImg = new ImageView(this);
+        coverImg.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.addView(coverImg, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        music.addView(cover, new LinearLayout.LayoutParams(dp(76), dp(76)));
+
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams ip = lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        ip.leftMargin = dp(12);
+        music.addView(info, ip);
+
+        tvCaption = label("Яндекс Музыка", 11, MUTED);
+        tvCaption.setSingleLine(true);
+        info.addView(tvCaption);
+        tvTitle = label("Нажмите, чтобы открыть", 16, Color.WHITE);
+        tvTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        tvTitle.setSingleLine(true);
+        tvTitle.setEllipsize(TextUtils.TruncateAt.END);
+        info.addView(tvTitle);
+        tvArtist = label("", 12, MUTED);
+        tvArtist.setSingleLine(true);
+        tvArtist.setEllipsize(TextUtils.TruncateAt.END);
+        info.addView(tvArtist);
+
+        bar = new BarView(this);
+        LinearLayout.LayoutParams bp = lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(4), 0);
+        bp.topMargin = dp(6);
+        info.addView(bar, bp);
+
+        LinearLayout ctl = new LinearLayout(this);
+        ctl.setOrientation(LinearLayout.HORIZONTAL);
+        ctl.setGravity(Gravity.CENTER_VERTICAL);
+        IconView prev = new IconView(this, IconView.PREV);
+        prev.setOnClickListener(v -> { if (mc != null) mc.getTransportControls().skipToPrevious(); else onMusicCardClick(); });
+        btnPlay = new IconView(this, IconView.PLAY);
+        btnPlay.setOnClickListener(v -> togglePlay());
+        IconView next = new IconView(this, IconView.NEXT);
+        next.setOnClickListener(v -> { if (mc != null) mc.getTransportControls().skipToNext(); else onMusicCardClick(); });
+        ctl.addView(prev, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(dp(42), dp(42));
+        pp.leftMargin = dp(10);
+        pp.rightMargin = dp(10);
+        ctl.addView(btnPlay, pp);
+        ctl.addView(next, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout.LayoutParams cl = lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0);
+        cl.topMargin = dp(4);
+        info.addView(ctl, cl);
+    }
+
+    private void buildRadioCard(LinearLayout widgets) {
+        LinearLayout radio = card(LinearLayout.VERTICAL);
+        radio.setGravity(Gravity.CENTER_VERTICAL);
+        radio.setPadding(dp(16), dp(10), dp(16), dp(10));
+        radio.setClickable(true);
+        radio.setOnClickListener(v -> openRadio());
+        widgets.addView(radio, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.62f));
+
+        TextView fm = label("FM", 13, 0xFF67E8F9);
+        fm.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        fm.setPadding(dp(10), dp(3), dp(10), dp(3));
+        GradientDrawable chip = new GradientDrawable();
+        chip.setColor(0x2E22D3EE);
+        chip.setCornerRadius(dp(20));
+        fm.setBackground(chip);
+        radio.addView(fm, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
+        TextView t = label("Радио", 26, Color.WHITE);
+        t.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+        t.setPadding(0, dp(6), 0, 0);
+        radio.addView(t);
+        radio.addView(label("Нажмите, чтобы открыть", 12, MUTED));
+    }
+
+    // ---------------------------------------------------------------- плитки
 
     private class Holder {
         final LinearLayout inner;
@@ -310,7 +521,7 @@ public class MainActivity extends Activity {
             label.setSingleLine(true);
             label.setEllipsize(TextUtils.TruncateAt.END);
             label.setGravity(Gravity.CENTER);
-            label.setPadding(0, dp(5), 0, 0);
+            label.setPadding(0, dp(3), 0, 0);
             inner.addView(label, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
@@ -327,11 +538,11 @@ public class MainActivity extends Activity {
 
     private FrameLayout makeTile(App app, int iconDp, int textSp) {
         FrameLayout outer = new FrameLayout(this);
-        outer.setPadding(dp(4), dp(4), dp(4), dp(4));
+        outer.setPadding(dp(3), dp(3), dp(3), dp(3));
         LinearLayout inner = new LinearLayout(this);
         inner.setOrientation(LinearLayout.VERTICAL);
         inner.setGravity(Gravity.CENTER_HORIZONTAL);
-        inner.setPadding(dp(6), dp(10), dp(6), dp(8));
+        inner.setPadding(dp(4), dp(8), dp(4), dp(6));
         inner.setDuplicateParentStateEnabled(true);
         outer.addView(inner, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -350,7 +561,7 @@ public class MainActivity extends Activity {
         public View getView(int pos, View convert, ViewGroup parent) {
             App a = apps.get(pos);
             if (convert == null) {
-                convert = makeTile(a, 52, 13);
+                convert = makeTile(a, 44, 12);
                 convert.setLayoutParams(new AbsListView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             } else {
@@ -360,7 +571,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ---------------------------------------------------------------- маълумот
+    // ---------------------------------------------------------------- данные
 
     private void loadApps() {
         io.execute(() -> {
@@ -428,18 +639,180 @@ public class MainActivity extends Activity {
                 while ((line = r.readLine()) != null) sb.append(line);
                 r.close();
                 double t = new JSONObject(sb.toString()).getJSONObject("current").getDouble("temperature_2m");
-                final String txt = Math.round(t) + "°  Урганч";
+                final String txt = Math.round(t) + "°  Ургенч";
                 ui.post(() -> {
                     weather.setText(txt);
                     weather.setVisibility(View.VISIBLE);
                 });
             } catch (Exception e) {
-                lastWeather = 0; // кейинги safar қайта уриниш
+                lastWeather = 0;
             }
         });
     }
 
-    // ---------------------------------------------------------------- севимлилар
+    // ---------------------------------------------------------------- GPS-спидометр
+
+    private void startLocation() {
+        try {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_LOC);
+                return;
+            }
+            lm.removeUpdates(locListener);
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0, locListener);
+        } catch (Exception e) {
+            gauge.setSpeed(-1);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(code, perms, res);
+        if (code == REQ_LOC) startLocation();
+    }
+
+    // ---------------------------------------------------------------- плеер
+
+    private boolean hasListenerAccess() {
+        String s = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        return s != null && s.contains(getPackageName());
+    }
+
+    private void refreshMedia() {
+        if (!hasListenerAccess()) {
+            setController(null);
+            showMusicText("Музыка", "Разрешите доступ к уведомлениям", "Нажмите здесь");
+            return;
+        }
+        try {
+            if (!sessionsRegistered) {
+                msm.addOnActiveSessionsChangedListener(sessionsListener, listener);
+                sessionsRegistered = true;
+            }
+            pickController(msm.getActiveSessions(listener));
+        } catch (SecurityException e) {
+            setController(null);
+            showMusicText("Музыка", "Разрешите доступ к уведомлениям", "Нажмите здесь");
+        }
+    }
+
+    private void pickController(List<MediaController> list) {
+        MediaController best = null;
+        if (list != null) {
+            for (MediaController c : list) {
+                if (MUSIC_PKG.equals(c.getPackageName())) { best = c; break; }
+            }
+            if (best == null) {
+                for (MediaController c : list) {
+                    PlaybackState s = c.getPlaybackState();
+                    if (s != null && s.getState() == PlaybackState.STATE_PLAYING) { best = c; break; }
+                }
+            }
+            if (best == null && !list.isEmpty()) best = list.get(0);
+        }
+        setController(best);
+    }
+
+    private void setController(MediaController c) {
+        if (mc != null) {
+            if (c != null && mc.getSessionToken().equals(c.getSessionToken())) { updateMusicUi(); return; }
+            try { mc.unregisterCallback(mcCallback); } catch (Exception ignored) { }
+        }
+        mc = c;
+        if (mc != null) mc.registerCallback(mcCallback, ui);
+        updateMusicUi();
+    }
+
+    private void showMusicText(String caption, String title, String artist) {
+        tvCaption.setText(caption);
+        tvTitle.setText(title);
+        tvArtist.setText(artist);
+        coverImg.setImageBitmap(null);
+        lastArt = null;
+        coverNote.setVisibility(View.VISIBLE);
+        bar.setFraction(0f);
+        btnPlay.setKind(IconView.PLAY);
+    }
+
+    private void updateMusicUi() {
+        if (mc == null) {
+            if (hasListenerAccess()) showMusicText("Яндекс Музыка", "Нажмите, чтобы открыть", "");
+            return;
+        }
+        MediaMetadata m = mc.getMetadata();
+        PlaybackState s = mc.getPlaybackState();
+        String title = m == null ? null : m.getString(MediaMetadata.METADATA_KEY_TITLE);
+        String artist = m == null ? null : m.getString(MediaMetadata.METADATA_KEY_ARTIST);
+        tvCaption.setText(MUSIC_PKG.equals(mc.getPackageName()) ? "Яндекс Музыка" : "Сейчас играет");
+        tvTitle.setText(title == null ? "Без названия" : title);
+        tvArtist.setText(artist == null ? "" : artist);
+        Bitmap art = null;
+        if (m != null) {
+            art = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+            if (art == null) art = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
+            if (art == null) art = m.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+        }
+        if (art != lastArt) {
+            lastArt = art;
+            coverImg.setImageBitmap(art);
+            coverNote.setVisibility(art == null ? View.VISIBLE : View.GONE);
+        }
+        boolean playing = s != null && s.getState() == PlaybackState.STATE_PLAYING;
+        btnPlay.setKind(playing ? IconView.PAUSE : IconView.PLAY);
+        updateProgress();
+    }
+
+    private void updateProgress() {
+        if (mc == null) return;
+        PlaybackState s = mc.getPlaybackState();
+        MediaMetadata m = mc.getMetadata();
+        if (s == null || m == null) return;
+        long dur = m.getLong(MediaMetadata.METADATA_KEY_DURATION);
+        if (dur <= 0) { bar.setFraction(0f); return; }
+        long pos = s.getPosition();
+        if (s.getState() == PlaybackState.STATE_PLAYING) {
+            pos += (long) ((SystemClock.elapsedRealtime() - s.getLastPositionUpdateTime()) * s.getPlaybackSpeed());
+        }
+        bar.setFraction((float) pos / dur);
+    }
+
+    private void togglePlay() {
+        if (mc == null) { onMusicCardClick(); return; }
+        PlaybackState s = mc.getPlaybackState();
+        if (s != null && s.getState() == PlaybackState.STATE_PLAYING) mc.getTransportControls().pause();
+        else mc.getTransportControls().play();
+    }
+
+    private void onMusicCardClick() {
+        if (!hasListenerAccess()) {
+            try {
+                startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (Exception e) {
+                Toast.makeText(this, "Откройте: Настройки → Приложения → Доступ к уведомлениям → Лаунчер", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        String pkg = mc != null ? mc.getPackageName() : MUSIC_PKG;
+        Intent i = pm.getLaunchIntentForPackage(pkg);
+        if (i == null) i = pm.getLaunchIntentForPackage(MUSIC_PKG);
+        if (i == null) {
+            Toast.makeText(this, "Яндекс Музыка не установлена", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+    }
+
+    private void openRadio() {
+        for (App a : apps) {
+            String l = a.label.toLowerCase(Locale.ROOT);
+            if (l.equals("радио") || l.equals("radio") || l.equals("fm")) { launch(a); return; }
+        }
+        Toast.makeText(this, "Приложение «Радио» не найдено", Toast.LENGTH_SHORT).show();
+    }
+
+    // ---------------------------------------------------------------- избранное
 
     private List<String> getFavs() {
         String s = prefs.getString(KEY_FAVS, null);
@@ -473,8 +846,8 @@ public class MainActivity extends Activity {
         for (String p : getFavs()) {
             final App a = findApp(p);
             if (a == null) continue;
-            FrameLayout t = makeTile(a, 68, 14);
-            t.setLayoutParams(new LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT));
+            FrameLayout t = makeTile(a, 48, 13);
+            t.setLayoutParams(new LinearLayout.LayoutParams(dp(108), ViewGroup.LayoutParams.WRAP_CONTENT));
             t.setClickable(true);
             t.setOnClickListener(v -> launch(a));
             t.setOnLongClickListener(v -> { showMenu(a); return true; });
@@ -489,7 +862,7 @@ public class MainActivity extends Activity {
         rebuildFavs();
     }
 
-    // ---------------------------------------------------------------- ҳаракатлар
+    // ---------------------------------------------------------------- действия
 
     private void launch(App a) {
         try {
@@ -502,9 +875,9 @@ public class MainActivity extends Activity {
     private void showMenu(final App a) {
         boolean fav = getFavs().contains(a.pkg);
         String[] items = {
-                fav ? "Севимлилардан олиб ташлаш" : "Севимлиларга қўшиш",
-                "Илова ҳақида",
-                "Ўчириш"
+                fav ? "Убрать из избранного" : "Добавить в избранное",
+                "О приложении",
+                "Удалить"
         };
         new AlertDialog.Builder(this)
                 .setTitle(a.label)
@@ -522,7 +895,7 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    // ---------------------------------------------------------------- ўз-ўзидан янгилаш
+    // ---------------------------------------------------------------- самообновление
 
     private void checkUpdate(final boolean manual) {
         prefs.edit().putLong("upd_ts", System.currentTimeMillis()).apply();
@@ -532,11 +905,11 @@ public class MainActivity extends Activity {
                 if (info != null && info.code > Updater.currentCode(this)) {
                     ui.post(() -> askUpdate(info));
                 } else if (manual) {
-                    ui.post(() -> Toast.makeText(this, "Охирги версия ўрнатилган", Toast.LENGTH_SHORT).show());
+                    ui.post(() -> Toast.makeText(this, "Установлена последняя версия", Toast.LENGTH_SHORT).show());
                 }
             } catch (Exception e) {
                 if (manual) {
-                    ui.post(() -> Toast.makeText(this, "Текшириб бўлмади (интернет?)", Toast.LENGTH_SHORT).show());
+                    ui.post(() -> Toast.makeText(this, "Не удалось проверить (нет интернета?)", Toast.LENGTH_SHORT).show());
                 }
             }
         });
@@ -545,26 +918,26 @@ public class MainActivity extends Activity {
     private void askUpdate(final Updater.Info info) {
         if (isFinishing()) return;
         new AlertDialog.Builder(this)
-                .setTitle("Янги версия бор")
-                .setMessage("Лаунчер " + info.tag + " чиқди. Янгилайсизми?")
-                .setPositiveButton("Янгилаш", (d, w) -> startUpdate(info))
-                .setNegativeButton("Кейин", null)
+                .setTitle("Доступна новая версия")
+                .setMessage("Вышла версия " + info.tag + ". Обновить?")
+                .setPositiveButton("Обновить", (d, w) -> startUpdate(info))
+                .setNegativeButton("Позже", null)
                 .show();
     }
 
     private void startUpdate(final Updater.Info info) {
         if (!pm.canRequestPackageInstalls()) {
-            Toast.makeText(this, "Рухсат беринг, кейин қайта “Янгилаш”ни босинг", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Дайте разрешение, затем снова нажмите «Обновить»", Toast.LENGTH_LONG).show();
             startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:" + getPackageName())));
             return;
         }
-        Toast.makeText(this, "Юкланяпти…", Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "Загрузка…", Toast.LENGTH_LONG).show();
         net.execute(() -> {
             try {
                 Updater.downloadAndInstall(getApplicationContext(), info.url);
             } catch (Exception e) {
-                ui.post(() -> Toast.makeText(this, "Юклаб бўлмади: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                ui.post(() -> Toast.makeText(this, "Не удалось загрузить: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -573,7 +946,7 @@ public class MainActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(24), dp(16), dp(24), dp(8));
-        final TextView lbl = label("Шиша кучи: " + glass() + "%", 16, Color.WHITE);
+        final TextView lbl = label("Сила стекла: " + glass() + "%", 16, Color.WHITE);
         SeekBar sb = new SeekBar(this);
         sb.setMax(10);
         sb.setProgress(glass() / 10);
@@ -581,7 +954,7 @@ public class MainActivity extends Activity {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
                 prefs.edit().putInt(KEY_GLASS, p * 10).apply();
-                lbl.setText("Шиша кучи: " + (p * 10) + "%");
+                lbl.setText("Сила стекла: " + (p * 10) + "%");
                 applyGlass();
             }
             @Override public void onStartTrackingTouch(SeekBar s) { }
@@ -589,17 +962,17 @@ public class MainActivity extends Activity {
         });
         box.addView(lbl);
         box.addView(sb);
-        final TextView ver = label("Версия: " + Updater.currentCode(this), 14, 0xFF9AA3C0);
+        final TextView ver = label("Версия: " + Updater.currentCode(this), 14, MUTED);
         ver.setPadding(0, dp(18), 0, dp(6));
         box.addView(ver);
         Button upd = new Button(this);
-        upd.setText("Янгиланишни текшириш");
+        upd.setText("Проверить обновления");
         upd.setOnClickListener(v -> checkUpdate(true));
         box.addView(upd);
         new AlertDialog.Builder(this)
-                .setTitle("Созламалар")
+                .setTitle("Настройки лаунчера")
                 .setView(box)
-                .setPositiveButton("Тайёр", null)
+                .setPositiveButton("Готово", null)
                 .show();
     }
 }
