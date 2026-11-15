@@ -339,7 +339,7 @@ public class MainActivity extends Activity {
         // ===== левая колонка: часы + спидометр =====
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
-        content.addView(left, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.32f));
+        content.addView(left, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.31f));
 
         LinearLayout clockCard = card(LinearLayout.VERTICAL);
         clockCard.setPadding(dp(16), dp(10), dp(16), dp(8));
@@ -402,19 +402,20 @@ public class MainActivity extends Activity {
         speedCard.addView(gauge, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         left.addView(speedCard, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // ===== правая колонка =====
+        // ===== средняя колонка: навигация =====
+        buildMapCard(content);
+
+        // ===== правая колонка: плеер/радио (свайп) + избранное =====
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams rp = lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.68f);
+        LinearLayout.LayoutParams rp = lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.34f);
         rp.leftMargin = dp(10);
         content.addView(right, rp);
 
-        LinearLayout widgets = new LinearLayout(this);
-        widgets.setOrientation(LinearLayout.HORIZONTAL);
-        right.addView(widgets, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        buildMusicCard(widgets);
-        buildRadioCard(widgets);
+        SwipePager pager = new SwipePager(this);
+        right.addView(pager, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.85f));
+        buildMusicCard(pager);
+        buildRadioCard(pager);
 
         TextView t1 = label("Избранное", 12, MUTED);
         t1.setPadding(dp(4), dp(8), 0, dp(2));
@@ -424,8 +425,7 @@ public class MainActivity extends Activity {
         plusApp.label = "Добавить";
         plusApp.icon = plusBitmap();
         grid = new GridView(this);
-        grid.setNumColumns(GridView.AUTO_FIT);
-        grid.setColumnWidth(dp(112));
+        grid.setNumColumns(3);
         grid.setVerticalSpacing(dp(6));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setSelector(new ColorDrawable(Color.TRANSPARENT));
@@ -443,7 +443,7 @@ public class MainActivity extends Activity {
             if (!PLUS_PKG.equals(a.pkg)) showMenu(a);
             return true;
         });
-        right.addView(grid, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.4f));
+        right.addView(grid, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.5f));
 
         appsPanel = new LinearLayout(this);
         appsPanel.setOrientation(LinearLayout.VERTICAL);
@@ -471,14 +471,13 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
-    private void buildMusicCard(LinearLayout widgets) {
+    private void buildMusicCard(ViewGroup widgets) {
         LinearLayout music = card(LinearLayout.HORIZONTAL);
         music.setGravity(Gravity.CENTER_VERTICAL);
         music.setPadding(dp(12), dp(10), dp(12), dp(10));
         music.setOnClickListener(v -> onMusicCardClick());
-        LinearLayout.LayoutParams mp = lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
-        mp.rightMargin = dp(10);
-        widgets.addView(music, mp);
+        widgets.addView(music, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         FrameLayout cover = new FrameLayout(this);
         GradientDrawable cg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
@@ -547,13 +546,14 @@ public class MainActivity extends Activity {
         info.addView(ctl, cl);
     }
 
-    private void buildRadioCard(LinearLayout widgets) {
+    private void buildRadioCard(ViewGroup widgets) {
         LinearLayout radio = card(LinearLayout.VERTICAL);
         radio.setGravity(Gravity.CENTER_VERTICAL);
         radio.setPadding(dp(16), dp(10), dp(16), dp(10));
         radio.setClickable(true);
         radio.setOnClickListener(v -> openRadio());
-        widgets.addView(radio, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        widgets.addView(radio, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView fm = label("FM", 13, 0xFF67E8F9);
         fm.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
@@ -660,7 +660,7 @@ public class MainActivity extends Activity {
         public View getView(int pos, View convert, ViewGroup parent) {
             App a = data.get(pos);
             if (convert == null) {
-                convert = makeTile(a, 60, 14);
+                convert = makeTile(a, 56, 13);
                 convert.setLayoutParams(new AbsListView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             } else {
@@ -971,6 +971,54 @@ public class MainActivity extends Activity {
         }
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(i);
+    }
+
+    private void buildMapCard(LinearLayout content) {
+        LinearLayout mapCard = card(LinearLayout.VERTICAL);
+        mapCard.setPadding(dp(12), dp(10), dp(12), dp(12));
+        LinearLayout.LayoutParams mp = lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.35f);
+        mp.leftMargin = dp(10);
+        content.addView(mapCard, mp);
+
+        mapCard.addView(label("Навигация", 12, MUTED));
+
+        MapArtView art = new MapArtView(this);
+        art.setOnClickListener(v -> openMaps());
+        LinearLayout.LayoutParams ap = lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        ap.topMargin = dp(6);
+        ap.bottomMargin = dp(10);
+        mapCard.addView(art, ap);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams b1 = lp(0, dp(48), 1f);
+        b1.rightMargin = dp(8);
+        row.addView(navButton("Яндекс Карты", "ru.yandex.yandexmaps", 0xFF3B82F6, 0xFF22D3EE), b1);
+        LinearLayout.LayoutParams b2 = lp(0, dp(48), 1f);
+        b2.leftMargin = dp(8);
+        row.addView(navButton("Навигатор", "ru.yandex.yandexnavi", 0xFFF59E0B, 0xFFFBBF24), b2);
+        mapCard.addView(row, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
+    }
+
+    private TextView navButton(final String text, final String pkg, int c1, int c2) {
+        TextView b = label(text, 15, Color.WHITE);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{c1, c2});
+        g.setCornerRadius(dp(14));
+        b.setBackground(g);
+        b.setClickable(true);
+        b.setOnClickListener(v -> {
+            Intent i = pm.getLaunchIntentForPackage(pkg);
+            if (i == null) {
+                Toast.makeText(this, "Не установлено: " + text, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        });
+        return b;
     }
 
     private void openMaps() {
