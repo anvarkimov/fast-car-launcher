@@ -90,6 +90,7 @@ public class MainActivity extends Activity {
     private static final String KEY_FAVS = "favs5";
     private static final String KEY_GLASS = "glass2";
     private static final String KEY_MAPKEY = "mapkey";
+    private static final String DEFAULT_MAPKEY = "58839e27-b97f-4e36-a620-a5f3747fcb18";
     private static final String KEY_LIVEMAP = "livemap";
     private static final String PLUS_PKG = "__plus__";
     private static final long WEATHER_EVERY_MS = 30L * 60L * 1000L;
@@ -990,7 +991,7 @@ public class MainActivity extends Activity {
         mapCard.addView(label("Навигация", 12, MUTED));
 
         View art = null;
-        String mk = prefs.getString(KEY_MAPKEY, "").trim();
+        String mk = prefs.getString(KEY_MAPKEY, DEFAULT_MAPKEY).trim();
         if (mk.length() > 10 && prefs.getBoolean(KEY_LIVEMAP, true)) {
             try {
                 LiveMap.init(this, mk);
@@ -1278,7 +1279,7 @@ public class MainActivity extends Activity {
         ek.setTextColor(Color.WHITE);
         ek.setHintTextColor(MUTED);
         ek.setSingleLine(true);
-        ek.setText(prefs.getString(KEY_MAPKEY, ""));
+        ek.setText(prefs.getString(KEY_MAPKEY, DEFAULT_MAPKEY));
         box.addView(ek);
         final TextView diag = label("Плееры: " + activePlayers(), 12, MUTED);
         diag.setPadding(0, dp(12), 0, 0);
@@ -1289,7 +1290,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Готово", (d, w) -> {
                     String nk = ek.getText().toString().trim();
                     boolean nl = cb.isChecked();
-                    boolean changed = !nk.equals(prefs.getString(KEY_MAPKEY, ""))
+                    boolean changed = !nk.equals(prefs.getString(KEY_MAPKEY, DEFAULT_MAPKEY))
                             || nl != prefs.getBoolean(KEY_LIVEMAP, true);
                     prefs.edit().putString(KEY_MAPKEY, nk).putBoolean(KEY_LIVEMAP, nl).apply();
                     if (changed) restartSelf();
