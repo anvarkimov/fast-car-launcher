@@ -14,6 +14,7 @@ android {
         // GitHub Actions ҳар йиғишда рақамни оширади (run_number)
         versionCode = appCode
         versionName = appName
+        ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
     }
     signingConfigs {
         release {
@@ -32,8 +33,16 @@ android {
             signingConfig signingConfigs.release
         }
     }
+    packagingOptions {
+        jniLibs { useLegacyPackaging = true }
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+}
+
+dependencies {
+    // Яндекс MapKit lite: только карта (без поиска и навигации)
+    implementation 'com.yandex.android:maps.mobile:4.6.1-lite'
 }

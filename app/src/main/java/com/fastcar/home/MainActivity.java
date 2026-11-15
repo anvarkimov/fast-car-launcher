@@ -89,6 +89,8 @@ public class MainActivity extends Activity {
     private static final String PREFS = "fast_launcher";
     private static final String KEY_FAVS = "favs5";
     private static final String KEY_GLASS = "glass2";
+    private static final String KEY_MAPKEY = "mapkey";
+    private static final String KEY_LIVEMAP = "livemap";
     private static final String PLUS_PKG = "__plus__";
     private static final long WEATHER_EVERY_MS = 30L * 60L * 1000L;
     private static final int REQ_LOC = 11;
@@ -170,9 +172,12 @@ public class MainActivity extends Activity {
         @Override public void onSessionDestroyed() { refreshMedia(); }
     };
 
+    private LiveMap liveMap;
+
     private final LocationListener locListener = new LocationListener() {
         @Override
         public void onLocationChanged(Location l) {
+            if (liveMap != null) liveMap.moveTo(l.getLatitude(), l.getLongitude(), l.hasBearing() ? l.getBearing() : 0f);
             if (l.hasSpeed()) {
                 int kmh = Math.round(l.getSpeed() * 3.6f);
                 gauge.setSpeed(kmh < 2 ? 0 : kmh);
@@ -227,12 +232,14 @@ public class MainActivity extends Activity {
         }
         startLocation();
         refreshMedia();
+        if (liveMap != null) liveMap.onStart();
         ui.post(tick);
     }
 
     @Override
     protected void onStop() {
         started = false;
+        if (liveMap != null) liveMap.onStop();
         showApps(false);
         ui.removeCallbacks(tick);
         try { lm.removeUpdates(locListener); } catch (Exception ignored) { }
@@ -982,8 +989,21 @@ public class MainActivity extends Activity {
 
         mapCard.addView(label("Навигация", 12, MUTED));
 
-        MapArtView art = new MapArtView(this);
-        art.setOnClickListener(v -> openMaps());
+        View art = null;
+        String mk = prefs.getString(KEY_MAPKEY, "").trim();
+        if (mk.length() > 10 && prefs.getBoolean(KEY_LIVEMAP, true)) {
+            try {
+                LiveMap.init(this, mk);
+                liveMap = new LiveMap(this, v -> openMaps());
+                art = liveMap.view();
+            } catch (Throwable t) {
+                liveMap = null;
+            }
+        }
+        if (art == null) {
+            art = new MapArtView(this);
+            art.setOnClickListener(v -> openMaps());
+        }
         LinearLayout.LayoutParams ap = lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         ap.topMargin = dp(6);
         ap.bottomMargin = dp(10);
@@ -1245,13 +1265,49 @@ public class MainActivity extends Activity {
         upd.setText("Проверить обновления");
         upd.setOnClickListener(v -> checkUpdate(true));
         box.addView(upd);
+        final TextView mt = label("Живая карта Яндекс", 16, Color.WHITE);
+        mt.setPadding(0, dp(18), 0, dp(4));
+        box.addView(mt);
+        final android.widget.CheckBox cb = new android.widget.CheckBox(this);
+        cb.setText("Показывать живую карту");
+        cb.setTextColor(Color.WHITE);
+        cb.setChecked(prefs.getBoolean(KEY_LIVEMAP, true));
+        box.addView(cb);
+        final android.widget.EditText ek = new android.widget.EditText(this);
+        ek.setHint("API-ключ MapKit");
+        ek.setTextColor(Color.WHITE);
+        ek.setHintTextColor(MUTED);
+        ek.setSingleLine(true);
+        ek.setText(prefs.getString(KEY_MAPKEY, ""));
+        box.addView(ek);
         final TextView diag = label("Плееры: " + activePlayers(), 12, MUTED);
         diag.setPadding(0, dp(12), 0, 0);
         box.addView(diag);
         new AlertDialog.Builder(this)
                 .setTitle("Настройки лаунчера")
                 .setView(box)
-                .setPositiveButton("Готово", null)
+                .setPositiveButton("Готово", (d, w) -> {
+                    String nk = ek.getText().toString().trim();
+                    boolean nl = cb.isChecked();
+                    boolean changed = !nk.equals(prefs.getString(KEY_MAPKEY, ""))
+                            || nl != prefs.getBoolean(KEY_LIVEMAP, true);
+                    prefs.edit().putString(KEY_MAPKEY, nk).putBoolean(KEY_LIVEMAP, nl).apply();
+                    if (changed) restartSelf();
+                })
                 .show();
+    }
+
+    /** Перезапуск лаунчера, чтобы применить ключ/выключение живой карты. */
+    private void restartSelf() {
+        try {
+            Intent i = new Intent(this, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(
+                    this, 7, i, android.app.PendingIntent.FLAG_CANCEL_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+            ((android.app.AlarmManager) getSystemService(Context.ALARM_SERVICE))
+                    .set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 400, pi);
+        } catch (Exception ignored) { }
+        finishAffinity();
+        System.exit(0);
     }
 }
