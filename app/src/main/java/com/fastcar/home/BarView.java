@@ -29,7 +29,7 @@ class BarView extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
-        fill.setShader(new LinearGradient(0, 0, w, 0, 0xFFA78BFA, 0xFFF472B6, Shader.TileMode.CLAMP));
+        fill.setShader(new LinearGradient(0, 0, w, 0, Theme.cov1, Theme.cov2, Shader.TileMode.CLAMP));
     }
 
     @Override

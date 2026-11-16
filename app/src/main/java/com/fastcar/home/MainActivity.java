@@ -92,6 +92,7 @@ public class MainActivity extends Activity {
     private static final String KEY_MAPKEY = "mapkey";
     private static final String DEFAULT_MAPKEY = "58839e27-b97f-4e36-a620-a5f3747fcb18";
     private static final String KEY_LIVEMAP = "livemap";
+    private static final String KEY_THEME = "theme";
     private static final String PLUS_PKG = "__plus__";
     private static final long WEATHER_EVERY_MS = 30L * 60L * 1000L;
     private static final int REQ_LOC = 11;
@@ -204,6 +205,7 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         pm = getPackageManager();
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        Theme.set(prefs.getInt(KEY_THEME, 0));
         density = getResources().getDisplayMetrics().density;
         msm = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
         lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
@@ -336,8 +338,13 @@ public class MainActivity extends Activity {
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFF070A18, 0xFF110C2C, 0xFF06101F}));
+        GradientDrawable bgBase = new GradientDrawable(GradientDrawable.Orientation.TL_BR, Theme.bg);
+        GradientDrawable bgGlow = new GradientDrawable();
+        bgGlow.setGradientType(GradientDrawable.RADIAL_GRADIENT);
+        bgGlow.setGradientRadius(dp(520));
+        bgGlow.setGradientCenter(0.18f, 0.12f);
+        bgGlow.setColors(new int[]{(Theme.glow & 0x00FFFFFF) | 0x38000000, 0x00000000});
+        root.setBackground(new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{bgBase, bgGlow}));
         root.setPadding(dp(20), dp(8), dp(20), dp(8));
 
         content = new LinearLayout(this);
@@ -489,7 +496,7 @@ public class MainActivity extends Activity {
 
         FrameLayout cover = new FrameLayout(this);
         GradientDrawable cg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFF7C3AED, 0xFFEC4899});
+                new int[]{Theme.cov1, Theme.cov2});
         cg.setCornerRadius(dp(14));
         cover.setBackground(cg);
         cover.setClipToOutline(true);
@@ -563,7 +570,7 @@ public class MainActivity extends Activity {
         widgets.addView(radio, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        TextView fm = label("FM", 13, 0xFF67E8F9);
+        TextView fm = label("FM", 13, Theme.acc2);
         fm.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         fm.setPadding(dp(10), dp(3), dp(10), dp(3));
         GradientDrawable chip = new GradientDrawable();
@@ -1014,7 +1021,7 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams b1 = lp(0, dp(48), 1f);
         b1.rightMargin = dp(8);
-        row.addView(navButton("Яндекс Карты", "ru.yandex.yandexmaps", 0xFF3B82F6, 0xFF22D3EE), b1);
+        row.addView(navButton("Яндекс Карты", "ru.yandex.yandexmaps", Theme.acc1, Theme.acc2), b1);
         LinearLayout.LayoutParams b2 = lp(0, dp(48), 1f);
         b2.leftMargin = dp(8);
         row.addView(navButton("Навигатор", "ru.yandex.yandexnavi", 0xFFF59E0B, 0xFFFBBF24), b2);
@@ -1257,6 +1264,30 @@ public class MainActivity extends Activity {
             @Override public void onStartTrackingTouch(SeekBar s) { }
             @Override public void onStopTrackingTouch(SeekBar s) { }
         });
+        final TextView tl = label("Тема: " + Theme.NAMES[Theme.idx], 16, Color.WHITE);
+        tl.setPadding(0, 0, 0, dp(8));
+        box.addView(tl);
+        LinearLayout tr = new LinearLayout(this);
+        tr.setOrientation(LinearLayout.HORIZONTAL);
+        for (int ti = 0; ti < Theme.NAMES.length; ti++) {
+            final int fi = ti;
+            View sw = new View(this);
+            GradientDrawable sg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{Theme.preview(ti), Theme.preview2(ti)});
+            sg.setShape(GradientDrawable.OVAL);
+            sg.setStroke(dp(ti == Theme.idx ? 3 : 1), ti == Theme.idx ? Color.WHITE : 0x66FFFFFF);
+            sw.setBackground(sg);
+            sw.setFocusable(true);
+            sw.setOnClickListener(v -> {
+                prefs.edit().putInt(KEY_THEME, fi).commit();
+                recreate();
+            });
+            LinearLayout.LayoutParams sp = lp(dp(44), dp(44), 0);
+            sp.rightMargin = dp(12);
+            tr.addView(sw, sp);
+        }
+        box.addView(tr);
+        lbl.setPadding(0, dp(18), 0, 0);
         box.addView(lbl);
         box.addView(sb);
         final TextView ver = label("Версия: " + Updater.currentCode(this), 14, MUTED);

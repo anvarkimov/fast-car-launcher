@@ -42,7 +42,7 @@ class GaugeView extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
-        prog.setShader(new LinearGradient(0, 0, w, 0, 0xFF3B82F6, 0xFF22D3EE, Shader.TileMode.CLAMP));
+        prog.setShader(new LinearGradient(0, 0, w, 0, Theme.acc1, Theme.acc2, Shader.TileMode.CLAMP));
     }
 
     @Override

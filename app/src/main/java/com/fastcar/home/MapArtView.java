@@ -41,7 +41,7 @@ class MapArtView extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
-        route.setShader(new LinearGradient(0, h, w, 0, 0xFF3B82F6, 0xFF22D3EE, Shader.TileMode.CLAMP));
+        route.setShader(new LinearGradient(0, h, w, 0, Theme.acc1, Theme.acc2, Shader.TileMode.CLAMP));
     }
 
     @Override
@@ -95,14 +95,14 @@ class MapArtView extends View {
         c.drawPath(path, route);
 
         // старт
-        pt.setColor(0x3322D3EE);
+        pt.setColor((Theme.acc2 & 0x00FFFFFF) | 0x33000000);
         c.drawCircle(w * 0.16f, h * 0.88f, 14 * d, pt);
         pt.setColor(0xFFFFFFFF);
         c.drawCircle(w * 0.16f, h * 0.88f, 7 * d, pt);
-        pt.setColor(0xFF3B82F6);
+        pt.setColor(Theme.acc1);
         c.drawCircle(w * 0.16f, h * 0.88f, 3.5f * d, pt);
         // финиш
-        pt.setColor(0xFFF472B6);
+        pt.setColor(Theme.acc2);
         c.drawCircle(w * 0.90f, h * 0.15f, 10 * d, pt);
         pt.setColor(0xFFFFFFFF);
         c.drawCircle(w * 0.90f, h * 0.15f, 3.5f * d, pt);
