@@ -1292,7 +1292,7 @@ public class MainActivity extends Activity {
                     boolean nl = cb.isChecked();
                     boolean changed = !nk.equals(prefs.getString(KEY_MAPKEY, DEFAULT_MAPKEY))
                             || nl != prefs.getBoolean(KEY_LIVEMAP, true);
-                    prefs.edit().putString(KEY_MAPKEY, nk).putBoolean(KEY_LIVEMAP, nl).apply();
+                    prefs.edit().putString(KEY_MAPKEY, nk).putBoolean(KEY_LIVEMAP, nl).commit();
                     if (changed) restartSelf();
                 })
                 .show();
