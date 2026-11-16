@@ -483,6 +483,30 @@ public class MainActivity extends Activity {
         appsGrid = ag;
         root.addView(appsPanel, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        // Карточка часов и плеер/радио одной высоты
+        final LinearLayout fClock = clockCard;
+        final SwipePager fPager = pager;
+        fClock.getViewTreeObserver().addOnGlobalLayoutListener(new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                int hc = fClock.getHeight(), hp = fPager.getHeight();
+                if (hc <= 0 || hp <= 0) return;
+                fClock.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                int h = Math.max(hc, hp);
+                if (hc != h) {
+                    ViewGroup.LayoutParams l = fClock.getLayoutParams();
+                    l.height = h;
+                    fClock.setLayoutParams(l);
+                }
+                if (hp != h) {
+                    LinearLayout.LayoutParams l = (LinearLayout.LayoutParams) fPager.getLayoutParams();
+                    l.height = h;
+                    l.weight = 0;
+                    fPager.setLayoutParams(l);
+                }
+            }
+        });
+
         setContentView(root);
     }
 
