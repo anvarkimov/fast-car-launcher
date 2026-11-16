@@ -483,27 +483,24 @@ public class MainActivity extends Activity {
         appsGrid = ag;
         root.addView(appsPanel, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // Карточка часов и плеер/радио одной высоты
+        // Карточка часов = высота плеера/радио (часы подгоняются под неё)
         final LinearLayout fClock = clockCard;
         final SwipePager fPager = pager;
+        final LinearLayout fTop = top;
+        final TextClock fTime = clock;
         fClock.getViewTreeObserver().addOnGlobalLayoutListener(new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
             @Override
             public void onGlobalLayout() {
                 int hc = fClock.getHeight(), hp = fPager.getHeight();
                 if (hc <= 0 || hp <= 0) return;
                 fClock.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                int h = Math.max(hc, hp);
-                if (hc != h) {
-                    ViewGroup.LayoutParams l = fClock.getLayoutParams();
-                    l.height = h;
-                    fClock.setLayoutParams(l);
-                }
-                if (hp != h) {
-                    LinearLayout.LayoutParams l = (LinearLayout.LayoutParams) fPager.getLayoutParams();
-                    l.height = h;
-                    l.weight = 0;
-                    fPager.setLayoutParams(l);
-                }
+                if (hc == hp) return;
+                ViewGroup.LayoutParams l = fClock.getLayoutParams();
+                l.height = hp;
+                fClock.setLayoutParams(l);
+                int avail = hp - fTop.getHeight() - dp(10) - dp(8) - dp(6);
+                float px = Math.min(80 * getResources().getDisplayMetrics().scaledDensity, avail / 1.2f);
+                fTime.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, Math.max(px, dp(36)));
             }
         });
 
