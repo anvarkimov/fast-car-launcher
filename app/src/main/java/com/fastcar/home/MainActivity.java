@@ -875,9 +875,9 @@ public class MainActivity extends Activity {
                     try {
                         List<android.location.Address> ad = new Geocoder(MainActivity.this, new Locale("ru")).getFromLocation(wLat, wLon, 1);
                         if (ad != null && !ad.isEmpty()) {
-                            String c = ad.get(0).getLocality();
-                            if (c == null) c = ad.get(0).getSubAdminArea();
-                            if (c != null) city = c;
+                            String loc = ad.get(0).getLocality();
+                            if (loc == null) loc = ad.get(0).getSubAdminArea();
+                            if (loc != null) city = loc;
                         }
                     } catch (Exception ignored) { }
                     wCity = city;
