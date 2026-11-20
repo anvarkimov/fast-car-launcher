@@ -18,6 +18,8 @@ class GaugeView extends View {
     private final Paint unit = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF();
     private int speed = 0; // -1 = нет данных
+    private int limit = 75;
+    private Shader grad;
 
     GaugeView(Context c) {
         super(c);
@@ -33,6 +35,11 @@ class GaugeView extends View {
         unit.setTextAlign(Paint.Align.CENTER);
     }
 
+    void setLimit(int l) {
+        limit = l;
+        invalidate();
+    }
+
     void setSpeed(int s) {
         if (s < -1) s = -1;
         if (s == speed) return;
@@ -42,7 +49,7 @@ class GaugeView extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
-        prog.setShader(new LinearGradient(0, 0, w, 0, Theme.acc1, Theme.acc2, Shader.TileMode.CLAMP));
+        grad = new LinearGradient(0, 0, w, 0, Theme.acc1, Theme.acc2, Shader.TileMode.CLAMP);
     }
 
     @Override
@@ -55,6 +62,10 @@ class GaugeView extends View {
         float cx = w / 2f, cy = h / 2f, r = s / 2f - stroke;
         rect.set(cx - r, cy - r, cx + r, cy + r);
         c.drawArc(rect, 135, 270, false, track);
+        boolean over = speed > limit;
+        prog.setShader(over ? null : grad);
+        prog.setColor(0xFFEF4444);
+        num.setColor(over ? 0xFFFF6B6B : 0xFFFFFFFF);
         if (speed > 0) {
             c.drawArc(rect, 135, 270f * Math.min(speed, MAX) / MAX, false, prog);
         }

@@ -2,7 +2,12 @@ package com.fastcar.home;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.AlertDialog;
+import android.graphics.BitmapFactory;
+import android.location.Geocoder;
+import android.widget.ScrollView;
+import java.util.Calendar;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -93,6 +98,11 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_MAPKEY = "58839e27-b97f-4e36-a620-a5f3747fcb18";
     private static final String KEY_LIVEMAP = "livemap";
     private static final String KEY_THEME = "theme";
+    private static final String KEY_LIMIT = "limit";
+    private static final String KEY_AUTO = "auto";
+    private static final String KEY_NIGHT = "night";
+    private static final int REQ_BG = 21;
+    private static boolean autoDone;
     private static final String PLUS_PKG = "__plus__";
     private static final long WEATHER_EVERY_MS = 30L * 60L * 1000L;
     private static final int REQ_LOC = 11;
@@ -123,6 +133,25 @@ public class MainActivity extends Activity {
     private App plusApp;
     private TextView weather;
     private GaugeView gauge;
+    private TextView tripView;
+    private Location prevLoc;
+    private long lastFixMs;
+    private double tripKm;
+    private long tripMs;
+    private int tripMax;
+    private boolean tripDown;
+    private double wLat = 41.55, wLon = 60.63;
+    private volatile String wCity = "Ургенч";
+    private boolean haveWeatherPoint;
+    private int tickN;
+    private final Runnable tripResetRun = new Runnable() {
+        @Override public void run() {
+            tripKm = 0; tripMs = 0; tripMax = 0;
+            saveTrip();
+            updateTrip();
+            Toast.makeText(MainActivity.this, "Сафар нолга туширилди", Toast.LENGTH_SHORT).show();
+        }
+    };
     private float density;
     private int glassVer = 0;
     private Drawable.ConstantState glassCS;
@@ -179,11 +208,24 @@ public class MainActivity extends Activity {
     private final LocationListener locListener = new LocationListener() {
         @Override
         public void onLocationChanged(Location l) {
-            if (liveMap != null) liveMap.moveTo(l.getLatitude(), l.getLongitude(), l.hasBearing() ? l.getBearing() : 0f);
+            if (liveMap != null && started) liveMap.moveTo(l.getLatitude(), l.getLongitude(), l.hasBearing() ? l.getBearing() : 0f);
+            long now = SystemClock.elapsedRealtime();
+            if (prevLoc != null && l.getAccuracy() < 40 && l.hasSpeed() && l.getSpeed() > 1.5f) {
+                float dist = prevLoc.distanceTo(l);
+                if (dist < 500) {
+                    tripKm += dist / 1000.0;
+                    if (now - lastFixMs < 5000) tripMs += now - lastFixMs;
+                }
+            }
+            prevLoc = l;
+            lastFixMs = now;
             if (l.hasSpeed()) {
                 int kmh = Math.round(l.getSpeed() * 3.6f);
                 gauge.setSpeed(kmh < 2 ? 0 : kmh);
+                if (kmh > tripMax && kmh < 300) tripMax = kmh;
             }
+            updateTrip();
+            weatherByGps(l);
         }
         @Override public void onStatusChanged(String p, int s, Bundle e) { }
         @Override public void onProviderEnabled(String p) { }
@@ -194,6 +236,7 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             updateProgress();
+            if (++tickN % 30 == 0 && Theme.idx != effectiveTheme()) { recreate(); return; }
             ui.postDelayed(this, 1000);
         }
     };
@@ -205,7 +248,10 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         pm = getPackageManager();
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        Theme.set(prefs.getInt(KEY_THEME, 0));
+        Theme.set(effectiveTheme());
+        tripKm = prefs.getFloat("trip_km", 0f);
+        tripMs = prefs.getLong("trip_ms", 0L);
+        tripMax = prefs.getInt("trip_max", 0);
         density = getResources().getDisplayMetrics().density;
         msm = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
         lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
@@ -235,6 +281,19 @@ public class MainActivity extends Activity {
         }
         startLocation();
         refreshMedia();
+        if (!autoDone) {
+            autoDone = true;
+            final int am = prefs.getInt(KEY_AUTO, 0);
+            if (prefs.getBoolean("skip_auto", false)) {
+                prefs.edit().putBoolean("skip_auto", false).apply();
+            } else if (am > 0) {
+                ui.postDelayed(() -> {
+                    if (!started) return;
+                    Intent li = pm.getLaunchIntentForPackage(am == 1 ? MUSIC_PKG : "ru.yandex.yandexnavi");
+                    if (li != null) { try { startActivity(li); } catch (Exception ignored) { } }
+                }, 4000);
+            }
+        }
         if (liveMap != null) liveMap.onStart();
         ui.post(tick);
     }
@@ -245,7 +304,7 @@ public class MainActivity extends Activity {
         if (liveMap != null) liveMap.onStop();
         showApps(false);
         ui.removeCallbacks(tick);
-        try { lm.removeUpdates(locListener); } catch (Exception ignored) { }
+        saveTrip();
         super.onStop();
     }
 
@@ -255,6 +314,7 @@ public class MainActivity extends Activity {
         try { if (sessionsRegistered) msm.removeOnActiveSessionsChangedListener(sessionsListener); } catch (Exception ignored) { }
         if (mc != null) { try { mc.unregisterCallback(mcCallback); } catch (Exception ignored) { } }
         if (radioCtl != null) { try { radioCtl.unregisterCallback(radioCallback); } catch (Exception ignored) { } }
+        try { lm.removeUpdates(locListener); } catch (Exception ignored) { }
         io.shutdownNow();
         net.shutdownNow();
         super.onDestroy();
@@ -344,7 +404,16 @@ public class MainActivity extends Activity {
         bgGlow.setGradientRadius(dp(520));
         bgGlow.setGradientCenter(0.18f, 0.12f);
         bgGlow.setColors(new int[]{(Theme.glow & 0x00FFFFFF) | 0x38000000, 0x00000000});
-        root.setBackground(new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{bgBase, bgGlow}));
+        java.util.ArrayList<Drawable> layers = new java.util.ArrayList<>();
+        Bitmap wp = loadWallpaper();
+        if (wp != null) {
+            layers.add(new android.graphics.drawable.BitmapDrawable(getResources(), wp));
+            layers.add(new ColorDrawable(0xB3000000));
+        } else {
+            layers.add(bgBase);
+        }
+        layers.add(bgGlow);
+        root.setBackground(new android.graphics.drawable.LayerDrawable(layers.toArray(new Drawable[0])));
         root.setPadding(dp(20), dp(8), dp(20), dp(8));
 
         content = new LinearLayout(this);
@@ -401,20 +470,31 @@ public class MainActivity extends Activity {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     v.setPressed(true);
+                    tripDown = tripView != null && e.getY() >= tripView.getTop();
+                    if (tripDown) ui.postDelayed(tripResetRun, 800);
                     return true;
                 case MotionEvent.ACTION_UP:
                     v.setPressed(false);
-                    openMaps();   // и касание, и свайп
+                    ui.removeCallbacks(tripResetRun);
+                    if (!tripDown) openMaps();   // и касание, и свайп
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     v.setPressed(false);
+                    ui.removeCallbacks(tripResetRun);
                     return true;
                 default:
                     return true;
             }
         });
         gauge = new GaugeView(this);
-        speedCard.addView(gauge, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        gauge.setLimit(prefs.getInt(KEY_LIMIT, 75));
+        speedCard.addView(gauge, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        tripView = label("", 14, MUTED);
+        tripView.setGravity(Gravity.CENTER);
+        tripView.setSingleLine(true);
+        tripView.setPadding(0, dp(4), 0, dp(2));
+        speedCard.addView(tripView, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
+        updateTrip();
         left.addView(speedCard, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         // ===== средняя колонка: навигация =====
@@ -780,7 +860,7 @@ public class MainActivity extends Activity {
         lastWeather = SystemClock.elapsedRealtime();
         net.execute(() -> {
             try {
-                URL u = new URL("https://api.open-meteo.com/v1/forecast?latitude=41.55&longitude=60.63&current=temperature_2m");
+                URL u = new URL("https://api.open-meteo.com/v1/forecast?latitude=" + wLat + "&longitude=" + wLon + "&current=temperature_2m");
                 HttpURLConnection c = (HttpURLConnection) u.openConnection();
                 c.setConnectTimeout(8000);
                 c.setReadTimeout(8000);
@@ -790,7 +870,19 @@ public class MainActivity extends Activity {
                 while ((line = r.readLine()) != null) sb.append(line);
                 r.close();
                 double t = new JSONObject(sb.toString()).getJSONObject("current").getDouble("temperature_2m");
-                final String txt = Math.round(t) + "°  Ургенч";
+                if (wCity == null) {
+                    String city = "Рядом";
+                    try {
+                        List<android.location.Address> ad = new Geocoder(MainActivity.this, new Locale("ru")).getFromLocation(wLat, wLon, 1);
+                        if (ad != null && !ad.isEmpty()) {
+                            String c = ad.get(0).getLocality();
+                            if (c == null) c = ad.get(0).getSubAdminArea();
+                            if (c != null) city = c;
+                        }
+                    } catch (Exception ignored) { }
+                    wCity = city;
+                }
+                final String txt = Math.round(t) + "°  " + wCity;
                 ui.post(() -> {
                     weather.setText(txt);
                     weather.setVisibility(View.VISIBLE);
@@ -1333,12 +1425,96 @@ public class MainActivity extends Activity {
         ek.setSingleLine(true);
         ek.setText(prefs.getString(KEY_MAPKEY, DEFAULT_MAPKEY));
         box.addView(ek);
+        // --- скорость / сафар
+        final TextView ll = label("Лимит скорости: " + prefs.getInt(KEY_LIMIT, 75) + " км/ч (после — красный)", 16, Color.WHITE);
+        ll.setPadding(0, dp(18), 0, dp(4));
+        box.addView(ll);
+        SeekBar lsb = new SeekBar(this);
+        lsb.setMax(90);
+        lsb.setProgress(prefs.getInt(KEY_LIMIT, 75) - 40);
+        lsb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sk, int p, boolean u) {
+                prefs.edit().putInt(KEY_LIMIT, p + 40).apply();
+                ll.setText("Лимит скорости: " + (p + 40) + " км/ч (после — красный)");
+                gauge.setLimit(p + 40);
+            }
+            @Override public void onStartTrackingTouch(SeekBar sk) { }
+            @Override public void onStopTrackingTouch(SeekBar sk) { }
+        });
+        box.addView(lsb);
+        final TextView hint = label("Сафар ҳисоблагичи: спидометр тагидаги сатрни 1 сония босиб туринг — нолга тушади.", 12, MUTED);
+        hint.setPadding(0, dp(4), 0, 0);
+        box.addView(hint);
+        // --- звук и быстрые настройки
+        final AudioManager aud = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        final TextView vl = label("Громкость", 16, Color.WHITE);
+        vl.setPadding(0, dp(18), 0, dp(4));
+        box.addView(vl);
+        SeekBar vsb = new SeekBar(this);
+        vsb.setMax(aud.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+        vsb.setProgress(aud.getStreamVolume(AudioManager.STREAM_MUSIC));
+        vsb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sk, int p, boolean u) {
+                if (u) aud.setStreamVolume(AudioManager.STREAM_MUSIC, p, 0);
+            }
+            @Override public void onStartTrackingTouch(SeekBar sk) { }
+            @Override public void onStopTrackingTouch(SeekBar sk) { }
+        });
+        box.addView(vsb);
+        LinearLayout qs = new LinearLayout(this);
+        qs.setOrientation(LinearLayout.HORIZONTAL);
+        qs.addView(smallBtn("Wi-Fi", v -> openSystem(Settings.ACTION_WIFI_SETTINGS)), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        qs.addView(smallBtn("Bluetooth", v -> openSystem(Settings.ACTION_BLUETOOTH_SETTINGS)), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        qs.addView(smallBtn("Экран", v -> openSystem(Settings.ACTION_DISPLAY_SETTINGS)), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(qs);
+        // --- память
+        final TextView ml = label("ОЗУ: свободно " + freeMb() + " МБ из " + totalMb() + " МБ", 16, Color.WHITE);
+        ml.setPadding(0, dp(18), 0, dp(4));
+        box.addView(ml);
+        box.addView(smallBtn("Очистить память", v -> cleanMemory(ml)));
+        // --- автозапуск, ночь
+        final String[] autoNames = {"выкл", "Яндекс Музыка", "Яндекс Навигатор"};
+        final Button ab = smallBtn("Автозапуск при включении: " + autoNames[prefs.getInt(KEY_AUTO, 0)], null);
+        ab.setOnClickListener(v -> {
+            int n = (prefs.getInt(KEY_AUTO, 0) + 1) % 3;
+            prefs.edit().putInt(KEY_AUTO, n).apply();
+            ab.setText("Автозапуск при включении: " + autoNames[n]);
+        });
+        box.addView(ab);
+        final android.widget.CheckBox nb = new android.widget.CheckBox(this);
+        nb.setText("Ночью (20:00–06:00) автоматически тема «Графит»");
+        nb.setTextColor(Color.WHITE);
+        nb.setChecked(prefs.getBoolean(KEY_NIGHT, false));
+        nb.setOnCheckedChangeListener((cv, on) -> prefs.edit().putBoolean(KEY_NIGHT, on).apply());
+        box.addView(nb);
+        // --- фон
+        final TextView bl = label("Фон расми", 16, Color.WHITE);
+        bl.setPadding(0, dp(14), 0, dp(4));
+        box.addView(bl);
+        LinearLayout bg2 = new LinearLayout(this);
+        bg2.setOrientation(LinearLayout.HORIZONTAL);
+        bg2.addView(smallBtn("Танлаш…", v -> {
+            try {
+                Intent gi = new Intent(Intent.ACTION_GET_CONTENT);
+                gi.setType("image/*");
+                startActivityForResult(gi, REQ_BG);
+            } catch (Exception e) {
+                Toast.makeText(this, "Расм танлайдиган илова йўқ", Toast.LENGTH_LONG).show();
+            }
+        }), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        bg2.addView(smallBtn("Олиб ташлаш", v -> {
+            new java.io.File(getFilesDir(), "bg.jpg").delete();
+            recreate();
+        }), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(bg2);
         final TextView diag = label("Плееры: " + activePlayers(), 12, MUTED);
         diag.setPadding(0, dp(12), 0, 0);
         box.addView(diag);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(box);
         new AlertDialog.Builder(this)
                 .setTitle("Настройки лаунчера")
-                .setView(box)
+                .setView(sv)
                 .setPositiveButton("Готово", (d, w) -> {
                     String nk = ek.getText().toString().trim();
                     boolean nl = cb.isChecked();
@@ -1350,8 +1526,138 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    private int effectiveTheme() {
+        int t = prefs.getInt(KEY_THEME, 0);
+        if (prefs.getBoolean(KEY_NIGHT, false)) {
+            int h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+            if (h >= 20 || h < 6) t = 4;
+        }
+        return t;
+    }
+
+    private void updateTrip() {
+        if (tripView == null) return;
+        double avg = tripMs > 0 ? tripKm / (tripMs / 3600000.0) : 0;
+        int mins = (int) (tripMs / 60000L);
+        tripView.setText(String.format(Locale.US, "%.1f км · ср. %d · макс %d · %d:%02d",
+                tripKm, Math.round(avg), tripMax, mins / 60, mins % 60).replace('.', ','));
+    }
+
+    private void saveTrip() {
+        prefs.edit().putFloat("trip_km", (float) tripKm).putLong("trip_ms", tripMs).putInt("trip_max", tripMax).apply();
+    }
+
+    private void weatherByGps(Location l) {
+        float[] r = new float[1];
+        boolean far = true;
+        if (haveWeatherPoint) {
+            Location.distanceBetween(wLat, wLon, l.getLatitude(), l.getLongitude(), r);
+            far = r[0] > 15000;
+        }
+        if (far) {
+            wLat = l.getLatitude();
+            wLon = l.getLongitude();
+            haveWeatherPoint = true;
+            wCity = null;
+            loadWeather();
+        }
+    }
+
+    private long freeMb() {
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+        am.getMemoryInfo(mi);
+        return mi.availMem / (1024 * 1024);
+    }
+
+    private long totalMb() {
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+        am.getMemoryInfo(mi);
+        return mi.totalMem / (1024 * 1024);
+    }
+
+    /** Останавливает фоновые процессы пользовательских приложений (системные и Яндекс не трогаем). */
+    private void cleanMemory(final TextView out) {
+        final long before = freeMb();
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        for (android.content.pm.ApplicationInfo ai : pm.getInstalledApplications(0)) {
+            if ((ai.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) continue;
+            if (ai.packageName.equals(getPackageName()) || ai.packageName.startsWith("ru.yandex.")) continue;
+            try { am.killBackgroundProcesses(ai.packageName); } catch (Exception ignored) { }
+        }
+        ui.postDelayed(() -> {
+            long after = freeMb();
+            String t = "Свободно: " + after + " МБ (было " + before + " МБ)";
+            if (out != null) out.setText("ОЗУ: свободно " + after + " МБ (было " + before + " МБ)");
+            Toast.makeText(this, t, Toast.LENGTH_LONG).show();
+        }, 900);
+    }
+
+    private Bitmap loadWallpaper() {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), "bg.jpg");
+            if (!f.exists()) return null;
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inPreferredConfig = Bitmap.Config.RGB_565;
+            return BitmapFactory.decodeFile(f.getPath(), o);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_BG || res != RESULT_OK || data == null || data.getData() == null) return;
+        try {
+            Uri u = data.getData();
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            java.io.InputStream in = getContentResolver().openInputStream(u);
+            BitmapFactory.decodeStream(in, null, o);
+            in.close();
+            int ss = 1;
+            while (o.outWidth / ss > 2000) ss *= 2;
+            BitmapFactory.Options o2 = new BitmapFactory.Options();
+            o2.inSampleSize = ss;
+            o2.inPreferredConfig = Bitmap.Config.RGB_565;
+            in = getContentResolver().openInputStream(u);
+            Bitmap b = BitmapFactory.decodeStream(in, null, o2);
+            in.close();
+            if (b == null) throw new Exception("decode");
+            // обрезка под пропорции экрана и сжатие до 1280 по ширине
+            float ar = getWindow().getDecorView().getWidth() / (float) Math.max(1, getWindow().getDecorView().getHeight());
+            if (ar < 0.5f || ar > 4f) ar = 16f / 9f;
+            int cw = b.getWidth(), ch = Math.round(cw / ar);
+            if (ch > b.getHeight()) { ch = b.getHeight(); cw = Math.round(ch * ar); }
+            Bitmap c = Bitmap.createBitmap(b, (b.getWidth() - cw) / 2, (b.getHeight() - ch) / 2, cw, ch);
+            if (c.getWidth() > 1280) c = Bitmap.createScaledBitmap(c, 1280, Math.round(1280f / ar), true);
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(new java.io.File(getFilesDir(), "bg.jpg"));
+            c.compress(Bitmap.CompressFormat.JPEG, 85, fo);
+            fo.close();
+            recreate();
+        } catch (Throwable t) {
+            Toast.makeText(this, "Расм ўрнатилмади", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private Button smallBtn(String text, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setOnClickListener(l);
+        return b;
+    }
+
+    private void openSystem(String action) {
+        try { startActivity(new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); }
+        catch (Exception e) { Toast.makeText(this, "Очиб бўлмади", Toast.LENGTH_SHORT).show(); }
+    }
+
     /** Перезапуск лаунчера, чтобы применить ключ/выключение живой карты. */
     private void restartSelf() {
+        prefs.edit().putBoolean("skip_auto", true).commit();
         try {
             Intent i = new Intent(this, MainActivity.class);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
